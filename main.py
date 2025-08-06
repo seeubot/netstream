@@ -239,6 +239,9 @@ def get_video_mime_type(filename):
     }
     return mime_map.get(ext, 'video/mp4')
 
+# Flask app instance (global for webhook handler)
+telegram_bot_app = None
+
 # Flask Routes
 @flask_app.route('/')
 def serve_frontend():
@@ -433,6 +436,21 @@ def health_check():
         'series': content_collection.count_documents({'type': 'series'}),
         'storage_channel': STORAGE_CHANNEL_ID
     })
+
+# Webhook endpoint for Telegram updates
+@flask_app.route("/telegram-webhook", methods=["POST"])
+async def telegram_webhook():
+    """Handle incoming Telegram updates from the webhook."""
+    if not telegram_bot_app:
+        logger.error("Telegram bot application not initialized.")
+        return "Bot not ready", 500
+
+    update_json = request.get_json(force=True)
+    update = Update.de_json(update_json, telegram_bot_app.bot)
+
+    # Process the update asynchronously
+    await telegram_bot_app.process_update(update)
+    return "ok"
 
 # Telegram Bot handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -952,10 +970,32 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Failed to delete file. It might have been deleted already.")
 
 
-def run_flask():
-    """Run Flask app in a separate thread"""
+def run_flask_and_webhook(bot_app_instance: Application):
+    """Run Flask app and webhook in the main thread."""
+    global telegram_bot_app
+    telegram_bot_app = bot_app_instance # Assign the bot app instance to the global variable
+
     port = int(os.getenv('PORT', 5000))
-    flask_app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
+    public_domain = os.getenv('KOYEB_PUBLIC_DOMAIN')
+
+    if not public_domain:
+        logger.error("KOYEB_PUBLIC_DOMAIN environment variable is not set. Webhook will not be set.")
+        # Fallback to polling if domain is not set, though not ideal for Koyeb
+        bot_app_instance.run_polling(drop_pending_updates=True)
+        return
+
+    webhook_path = "/telegram-webhook"
+    webhook_url = f"https://{public_domain}{webhook_path}"
+
+    logger.info(f"Setting webhook to: {webhook_url}")
+
+    # Set up the webhook
+    bot_app_instance.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=webhook_path,
+        webhook_url=webhook_url
+    )
 
 if __name__ == "__main__":
     # Environment setup instructions
@@ -1014,12 +1054,6 @@ Starting bot...
         logger.error(f"An unexpected error occurred during MongoDB initialization: {e}")
         exit(1)
 
-    # Start Flask app in background thread
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    logger.info("Flask server started")
-
     # Initialize bot
     bot_app = Application.builder().token(BOT_TOKEN).build()
 
@@ -1047,7 +1081,8 @@ Starting bot...
     logger.info("Starting Netflix Bot...")
 
     try:
-        bot_app.run_polling(drop_pending_updates=True)
+        # Run Flask and webhook in the main thread
+        run_flask_and_webhook(bot_app)
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
