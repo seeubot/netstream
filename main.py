@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import TelegramError
-from flask import Flask, Response, abort, jsonify, request, render_template # Added render_template
+from flask import Flask, Response, abort, jsonify, request, render_template
 import threading
 import aiohttp
 
@@ -38,7 +38,6 @@ SUPPORTED_VIDEO_FORMATS = {
 }
 
 # Flask app for serving files
-# IMPORTANT: Specify the template_folder to tell Flask where to find your HTML files.
 flask_app = Flask(__name__, template_folder='templates')
 
 # Store file metadata with enhanced structure
@@ -848,59 +847,11 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def run_flask():
     """Run Flask app in a separate thread"""
     port = int(os.getenv('PORT', 5000))
-    flask_app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    # It's good practice to set use_reloader=False when running in a separate thread
+    flask_app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
 
-async def main():
-    """Main function to run the bot"""
-    global bot_app
-    
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN environment variable is required!")
-        return
-    
-    if not STORAGE_CHANNEL_ID:
-        logger.error("STORAGE_CHANNEL_ID environment variable is required!")
-        return
-    
-    # Start Flask app in background thread
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    logger.info("Flask server started")
-    
-    # Initialize bot
-    bot_app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add handlers
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("help", help_command))
-    bot_app.add_handler(CommandHandler("upload", upload_command))
-    bot_app.add_handler(CommandHandler("library", library_command))
-    bot_app.add_handler(CommandHandler("frontend", frontend_command))
-    bot_app.add_handler(CommandHandler("stats", stats_command))
-    bot_app.add_handler(CommandHandler("delete", delete_command))
-    
-    # Handle video files
-    bot_app.add_handler(MessageHandler(
-        filters.VIDEO | (filters.Document.ALL & filters.Document.VIDEO), 
-        handle_video_file
-    ))
-    
-    # Handle categorization callbacks
-    bot_app.add_handler(CallbackQueryHandler(handle_categorization))
-    
-    # Handle metadata input (text messages when categorizing)
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
-    
-    logger.info("Starting Netflix Bot...")
-    
-    # Start the bot
-    try:
-        await bot_app.run_polling(drop_pending_updates=True)
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Bot error: {e}")
+# The main function logic is moved directly into the if __name__ == "__main__": block
+# and the async def main() wrapper is removed.
 
 if __name__ == "__main__":
     # Environment setup instructions
@@ -934,11 +885,54 @@ Make sure to:
 Starting bot...
     """)
     
+    # Check for essential environment variables
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is required!")
+        exit(1) # Exit if critical variable is missing
+    
+    if not STORAGE_CHANNEL_ID:
+        logger.error("STORAGE_CHANNEL_ID environment variable is required!")
+        exit(1) # Exit if critical variable is missing
+
+    # Start Flask app in background thread
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True # Allow the main program to exit even if thread is running
+    flask_thread.start()
+    logger.info("Flask server started")
+    
+    # Initialize bot
+    bot_app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add handlers
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("help", help_command))
+    bot_app.add_handler(CommandHandler("upload", upload_command))
+    bot_app.add_handler(CommandHandler("library", library_command))
+    bot_app.add_handler(CommandHandler("frontend", frontend_command))
+    bot_app.add_handler(CommandHandler("stats", stats_command))
+    bot_app.add_handler(CommandHandler("delete", delete_command))
+    
+    # Handle video files
+    bot_app.add_handler(MessageHandler(
+        filters.VIDEO | (filters.Document.ALL & filters.Document.VIDEO), 
+        handle_video_file
+    ))
+    
+    # Handle categorization callbacks
+    bot_app.add_handler(CallbackQueryHandler(handle_categorization))
+    
+    # Handle metadata input (text messages when categorizing)
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
+    
+    logger.info("Starting Netflix Bot...")
+    
+    # Start the bot directly using run_polling
     try:
-        asyncio.run(main())
+        bot_app.run_polling(drop_pending_updates=True)
     except KeyboardInterrupt:
-        print("\n👋 Bot stopped by user")
+        logger.info("Bot stopped by user")
     except Exception as e:
-        print(f"❌ Error: {e}")
-        print("\nPlease check your environment variables and try again.")
+        logger.error(f"Bot error: {e}")
+        # If an error occurs, ensure the Flask thread is also signaled to stop if possible
+        # For simple threading, setting daemon=True allows the process to exit
 
