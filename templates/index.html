@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyStream - Netflix Style</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* Dark blue-gray background */
+            color: #f8fafc; /* Light text color */
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden; /* Prevent horizontal scroll */
+        }
+        .container {
+            max-width: 1280px; /* Max width for content */
+        }
+        /* Custom scrollbar for better aesthetics */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b; /* Darker track */
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #475569; /* Gray thumb */
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b; /* Lighter gray on hover */
+        }
+    </style>
+</head>
+<body>
+    <div id="app-root" class="min-h-screen bg-gray-900 text-white font-inter">
+        <!-- Content will be rendered here by JavaScript -->
+    </div>
+
+    <script>
+        // Global state management
+        let currentPage = 'home';
+        let content = [];
+        let selectedContent = null;
+        let searchQuery = '';
+        let isLoading = false;
+        let error = null;
+
+        // Base URL for your Flask backend API
+        // This assumes Flask is served from the same domain/port as this HTML file.
+        // If your Flask app is on a different domain, explicitly set it here:
+        // const API_BASE_URL = 'https://your-flask-app-domain.koyeb.app';
+        const API_BASE_URL = window.location.origin;
+
+        const appRoot = document.getElementById('app-root');
+
+        // --- Utility Functions ---
+
+        // Function to show loading spinner
+        function showLoading() {
+            isLoading = true;
+            error = null;
+            appRoot.innerHTML = `
+                <div class="flex flex-col justify-center items-center h-screen bg-gray-900 text-white">
+                    <div class="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-purple-500"></div>
+                    <p class="mt-4 text-lg">Loading content...</p>
+                </div>
+            `;
+        }
+
+        // Function to show error message
+        function showError(message) {
+            isLoading = false;
+            error = message;
+            appRoot.innerHTML = `
+                <div class="flex flex-col justify-center items-center h-screen bg-gray-900 text-red-500 text-lg">
+                    <p>Error: ${message}</p>
+                    <button id="retry-button" class="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-300">
+                        Retry
+                    </button>
+                </div>
+            `;
+            document.getElementById('retry-button').onclick = fetchContentAndRender;
+        }
+
+        // Format duration from seconds to human-readable string
+        function formatDuration(seconds) {
+            if (!seconds) return 'N/A';
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const remainingSeconds = Math.floor(seconds % 60);
+            return `${hours > 0 ? hours + 'h ' : ''}${minutes > 0 ? minutes + 'm ' : ''}${remainingSeconds}s`;
+        }
+
+        // --- Data Fetching ---
+
+        // Function to fetch all content from the backend
+        async function fetchContent() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/content`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                // Combine movies and series into a single array
+                content = [...data.movies, ...data.series];
+                return true; // Indicate success
+            } catch (err) {
+                console.error("Failed to fetch content:", err);
+                showError("Failed to load content. Please try again later.");
+                return false; // Indicate failure
+            }
+        }
+
+        // Function to fetch specific content item details
+        async function fetchContentDetails(contentId) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/content/item/${contentId}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                selectedContent = data;
+                return true;
+            } catch (err) {
+                console.error("Failed to fetch content details:", err);
+                showError("Failed to load content details. Please try again.");
+                return false;
+            }
+        }
+
+        // --- Event Handlers ---
+
+        // Handle navigation to content detail page
+        async function handleContentClick(contentItem) {
+            showLoading();
+            const success = await fetchContentDetails(contentItem.content_id);
+            if (success) {
+                currentPage = 'detail';
+                renderApp();
+            }
+        }
+
+        // Handle navigation to video player page
+        function handleWatchClick() {
+            if (selectedContent && selectedContent.stream_url) {
+                currentPage = 'player';
+                renderApp();
+            } else {
+                showError("Stream URL not available for this content.");
+            }
+        }
+
+        // --- Page Rendering Functions ---
+
+        function renderHomePage() {
+            const filteredContent = content.filter(item =>
+                item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                (item.description && item.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
+                (item.genre && Array.isArray(item.genre) && item.genre.some(g => g.toLowerCase().includes(searchQuery.toLowerCase())))
+            );
+
+            appRoot.innerHTML = `
+                <div class="container mx-auto p-4 md:p-8">
+                    <header class="text-center py-8">
+                        <h1 class="text-5xl font-bold text-red-600 mb-4 tracking-tight">
+                            <span class="bg-gradient-to-r from-red-600 to-purple-600 text-transparent bg-clip-text">
+                                MyStream
+                            </span>
+                        </h1>
+                        <p class="text-xl text-gray-300 mb-8">Your personal Netflix-style streaming library.</p>
+                    </header>
+
+                    <div class="flex justify-center mb-12">
+                        <input
+                            type="text"
+                            id="search-input"
+                            placeholder="Search movies or series..."
+                            value="${searchQuery}"
+                            class="w-full max-w-2xl p-4 rounded-full bg-gray-800 text-white border border-gray-700 focus:outline-none focus:ring-2 focus:ring-red-600 transition duration-300 shadow-lg"
+                        />
+                    </div>
+
+                    <h2 class="text-3xl font-semibold mb-6 text-gray-100">
+                        ${searchQuery ? `Results for "${searchQuery}"` : "Explore Content"}
+                    </h2>
+
+                    ${filteredContent.length === 0 && searchQuery ?
+                        `<p class="text-center text-gray-400 text-lg mt-10">No content found matching your search.</p>`
+                        : filteredContent.length === 0 && !searchQuery ?
+                        `<p class="text-center text-gray-400 text-lg mt-10">
+                            No content available yet. Upload videos using the Telegram bot!
+                        </p>`
+                        : ''
+                    }
+
+                    <div id="content-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+                        <!-- Content cards will be inserted here -->
+                    </div>
+                </div>
+            `;
+
+            // Add event listener for search input
+            document.getElementById('search-input').oninput = (e) => {
+                searchQuery = e.target.value;
+                renderHomePage(); // Re-render home page to show filtered results
+            };
+
+            // Populate content grid
+            const contentGrid = document.getElementById('content-grid');
+            filteredContent.forEach(item => {
+                const contentCard = document.createElement('div');
+                contentCard.className = "bg-gray-800 rounded-xl overflow-hidden shadow-xl hover:shadow-2xl transform hover:scale-105 transition duration-300 cursor-pointer border border-gray-700 hover:border-red-600";
+                contentCard.onclick = () => handleContentClick(item);
+
+                const titleText = encodeURIComponent(item.title);
+                const imageUrl = `https://placehold.co/400x225/374151/F9FAFB?text=${titleText}`;
+
+                contentCard.innerHTML = `
+                    <img
+                        src="${imageUrl}"
+                        alt="${item.title}"
+                        class="w-full h-48 object-cover rounded-t-xl"
+                        onerror="this.onerror=null;this.src='https://placehold.co/400x225/374151/F9FAFB?text=No+Image';"
+                    />
+                    <div class="p-4">
+                        <h3 class="text-xl font-semibold mb-2 text-gray-50 truncate">${item.title}</h3>
+                        <p class="text-sm text-gray-400 mb-2">
+                            ${item.type === 'movie' ? `Movie • ${item.year || 'N/A'}` : `Series • S${item.season || 'N/A'} E${item.episode || 'N/A'}`}
+                        </p>
+                        <p class="text-xs text-gray-500 line-clamp-2">${item.description || 'No description available.'}</p>
+                    </div>
+                `;
+                contentGrid.appendChild(contentCard);
+            });
+        }
+
+        function renderDetailPage() {
+            if (!selectedContent) {
+                appRoot.innerHTML = `
+                    <div class="flex flex-col justify-center items-center h-screen bg-gray-900 text-white">
+                        <p>No content selected.</p>
+                        <button id="back-to-home-btn" class="ml-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-300">
+                            Back to Home
+                        </button>
+                    </div>
+                `;
+                document.getElementById('back-to-home-btn').onclick = () => { currentPage = 'home'; renderApp(); };
+                return;
+            }
+
+            const { title, description, type, year, season, episode, genre, stream_url, file_info } = selectedContent;
+            const { duration, resolution, audio_tracks, subtitle_tracks } = file_info || {};
+
+            const titleText = encodeURIComponent(title);
+            const imageUrl = `https://placehold.co/600x338/374151/F9FAFB?text=${titleText}`;
+
+            appRoot.innerHTML = `
+                <div class="container mx-auto p-4 md:p-8">
+                    <button id="back-to-home-btn" class="mb-6 px-5 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-full transition duration-300 flex items-center shadow-md">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" />
+                        </svg>
+                        Back to Home
+                    </button>
+
+                    <div class="bg-gray-800 rounded-xl shadow-2xl p-6 md:p-10 flex flex-col lg:flex-row items-center lg:items-start gap-8">
+                        <div class="w-full lg:w-1/3 flex-shrink-0">
+                            <img
+                                src="${imageUrl}"
+                                alt="${title}"
+                                class="w-full rounded-lg shadow-lg"
+                                onerror="this.onerror=null;this.src='https://placehold.co/600x338/374151/F9FAFB?text=No+Image';"
+                            />
+                        </div>
+                        <div class="w-full lg:w-2/3">
+                            <h1 class="text-4xl md:text-5xl font-extrabold text-red-500 mb-3 leading-tight">${title}</h1>
+                            <p class="text-xl text-gray-300 mb-4">
+                                ${type === 'movie' ? `Movie • ${year || 'N/A'}` : `Series • Season ${season || 'N/A'}, Episode ${episode || 'N/A'}`}
+                            </p>
+                            <p class="text-gray-400 text-lg mb-6">${description || 'No description available.'}</p>
+
+                            <div class="flex flex-wrap gap-2 mb-6">
+                                ${genre && Array.isArray(genre) ? genre.map(g => `<span class="px-3 py-1 bg-gray-700 text-gray-200 rounded-full text-sm font-medium">${g}</span>`).join('') : ''}
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-gray-400 text-sm mb-8">
+                                ${duration ? `<div><strong class="text-gray-200">Duration:</strong> ${formatDuration(duration)}</div>` : ''}
+                                ${resolution ? `<div><strong class="text-gray-200">Resolution:</strong> ${resolution[0]}x${resolution[1]}</div>` : ''}
+                                ${audio_tracks && audio_tracks.length > 0 ? `<div><strong class="text-gray-200">Audio Tracks:</strong> ${audio_tracks.map(t => t.language || 'Unknown').join(', ') || 'N/A'}</div>` : ''}
+                                ${subtitle_tracks && subtitle_tracks.length > 0 ? `<div><strong class="text-gray-200">Subtitle Tracks:</strong> ${subtitle_tracks.map(t => t.language || 'Unknown').join(', ') || 'N/A'}</div>` : ''}
+                            </div>
+
+                            <button id="watch-now-btn" class="px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-full text-xl transition duration-300 transform hover:scale-105 shadow-lg flex items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 mr-3" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
+                                </svg>
+                                Watch Now
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('back-to-home-btn').onclick = () => { currentPage = 'home'; renderApp(); };
+            document.getElementById('watch-now-btn').onclick = handleWatchClick;
+        }
+
+        function renderPlayerPage() {
+            if (!selectedContent || !selectedContent.stream_url) {
+                appRoot.innerHTML = `
+                    <div class="flex flex-col justify-center items-center h-screen bg-gray-900 text-white">
+                        <p>No content selected for playback or stream URL missing.</p>
+                        <button id="back-to-details-btn" class="ml-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition duration-300">
+                            Back to Details
+                        </button>
+                    </div>
+                `;
+                document.getElementById('back-to-details-btn').onclick = () => { currentPage = 'detail'; renderApp(); };
+                return;
+            }
+
+            const titleText = encodeURIComponent(selectedContent.title);
+            const posterUrl = `https://placehold.co/1280x720/374151/F9FAFB?text=${titleText}`;
+
+            appRoot.innerHTML = `
+                <div class="flex flex-col items-center justify-center min-h-screen bg-gray-950 p-4">
+                    <div class="w-full max-w-6xl bg-gray-800 rounded-xl shadow-2xl overflow-hidden">
+                        <div class="relative pt-[56.25%]"> <!-- 16:9 Aspect Ratio -->
+                            <video
+                                controls
+                                autoplay
+                                class="absolute top-0 left-0 w-full h-full object-cover rounded-t-xl"
+                                poster="${posterUrl}"
+                            >
+                                <source src="${selectedContent.stream_url}" type="video/mp4" />
+                                Your browser does not support the video tag.
+                            </video>
+                        </div>
+                        <div class="p-6">
+                            <h2 class="text-3xl md:text-4xl font-bold text-white mb-2">${selectedContent.title}</h2>
+                            <p class="text-lg text-gray-400 mb-4">
+                                ${selectedContent.type === 'movie' ? `Movie • ${selectedContent.year || 'N/A'}` : `Series • Season ${selectedContent.season || 'N/A'}, Episode ${selectedContent.episode || 'N/A'}`}
+                            </p>
+                            <button id="back-to-details-btn" class="px-6 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-full transition duration-300 flex items-center shadow-md">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" />
+                                </svg>
+                                Back to Details
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('back-to-details-btn').onclick = () => { currentPage = 'detail'; renderApp(); };
+        }
+
+        // Main rendering function based on current page state
+        function renderApp() {
+            isLoading = false; // Reset loading state when rendering a page
+            error = null; // Clear any previous error
+
+            switch (currentPage) {
+                case 'home':
+                    renderHomePage();
+                    break;
+                case 'detail':
+                    renderDetailPage();
+                    break;
+                case 'player':
+                    renderPlayerPage();
+                    break;
+                default:
+                    renderHomePage(); // Default to home page
+            }
+        }
+
+        // Initial data fetch and render when the page loads
+        async function fetchContentAndRender() {
+            showLoading();
+            const success = await fetchContent();
+            if (success) {
+                renderApp();
+            }
+        }
+
+        // Run on window load
+        window.onload = fetchContentAndRender;
+
+    </script>
+</body>
+</html>
+
