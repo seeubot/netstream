@@ -15,7 +15,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import TelegramError
 from flask import Flask, Response, abort, jsonify, request, render_template_string
-import threading # Still needed for Flask's internal server if __name__ == "__main__" but not for Gunicorn
 import aiohttp
 
 # MongoDB imports
@@ -389,7 +388,7 @@ def get_content_item(content_id):
         abort(404)
 
     # Also fetch the associated file_info from the files collection
-    file_info = files_collection.find_one({'file_id': content_item['file_id']}, {'_id': 0}) # Use file_id from content_item
+    file_info = files_collection.find_one({'_id': content_item['file_id']}, {'_id': 0})
     if file_info:
         content_item['file_info'] = file_info
 
@@ -1027,16 +1026,9 @@ def create_app():
 
     # Set the webhook asynchronously after the Flask app starts
     # This needs to be done only once on startup.
-    # When running with Gunicorn, create_app is called by each worker.
-    # To avoid setting the webhook multiple times, we run it in a separate thread
-    # and manage its lifecycle. However, the simplest fix for the RuntimeError
-    # is to remove the polling entirely, and rely on the webhook.
-    # The webhook setting itself should ideally be done by a single process.
-    # For now, we'll keep it here and rely on the idempotent check within set_telegram_webhook.
+    # It's run in a new event loop to avoid conflicts with Gunicorn's main loop.
+    # This is a common pattern for one-off async tasks in sync contexts.
     try:
-        # This will attempt to set the webhook. The idempotent check helps.
-        # It's run in a new event loop to avoid conflicts with Gunicorn's main loop.
-        # This is a common pattern for one-off async tasks in sync contexts.
         asyncio.run(set_telegram_webhook(telegram_bot_app))
     except RuntimeError as e:
         logger.warning(f"Could not set webhook immediately: {e}. It might be set by another worker or later.")
