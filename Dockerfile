@@ -1,42 +1,28 @@
-# Use Python 3.11 slim image
-FROM python:3.11-slim
+# Use an official Python runtime as a parent image
+FROM python:3.10-slim-buster
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies including FFmpeg for video processing
+# Install ffmpeg (which includes ffprobe) and other necessary build tools
+# We use apt-get for Debian-based images
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    libavcodec-extra \
-    curl \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
+    --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set work directory
+# Set the working directory in the container
 WORKDIR /app
 
-# Copy requirements first for better Docker layer caching
-COPY requirements.txt .
+# Copy the current directory contents into the container at /app
+COPY . /app
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Install any needed Python packages specified in requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
-
-# Create directories for logs and temp files
-RUN mkdir -p /app/logs /app/temp
-
-# Expose port
-EXPOSE 8080
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Expose the port Flask will run on
+EXPOSE 5000
 
 # Run the application
-CMD ["python", "main.py"]
+# CMD ["python", "your_main_script_name.py"]
+# Use a more robust production-ready WSGI server like Gunicorn
+# Assuming your main script is named 'main.py' and your Flask app instance is 'flask_app'
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "main:flask_app"]
+
