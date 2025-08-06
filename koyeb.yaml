@@ -1,0 +1,27 @@
+name: telegram-streaming-bot
+services:
+  - name: streaming-bot
+    build:
+      type: docker
+      dockerfile: Dockerfile
+    instance_type: nano
+    regions: ["fra"]
+    env:
+      - name: BOT_TOKEN
+        value: "YOUR_BOT_TOKEN_HERE"
+      - name: STORAGE_CHANNEL_ID
+        value: "YOUR_CHANNEL_ID_HERE"
+      - name: KOYEB_PUBLIC_DOMAIN
+        value: "your-app-name.koyeb.app"
+      - name: PORT
+        value: "8080"
+    ports:
+      - port: 8080
+        protocol: http
+    health_check:
+      http:
+        path: /health
+        port: 8080
+    autoscaling:
+      min: 1
+      max: 1
