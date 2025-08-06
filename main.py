@@ -54,9 +54,6 @@ db = None
 files_collection = None
 content_collection = None
 
-# Global bot instance
-bot_app = None
-
 class VideoMetadata:
     def __init__(self, file_path: str):
         self.file_path = file_path
@@ -186,18 +183,24 @@ def get_video_mime_type(filename):
     return mime_map.get(ext, 'video/mp4')
 
 async def download_telegram_file(file_url, start_byte=0, end_byte=None):
-    """Download file from Telegram with range support"""
+    """Download file from Telegram with range support. Returns aiohttp.StreamReader."""
     headers = {}
     if end_byte:
         headers['Range'] = f'bytes={start_byte}-{end_byte}'
     elif start_byte > 0:
         headers['Range'] = f'bytes={start_byte}-'
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(file_url, headers=headers) as response:
-            if response.status in [200, 206]:
-                return response.content, response.status, dict(response.headers)
-            return None, response.status, {}
+    # Create a new session for each download to ensure proper cleanup if not managed globally
+    session = aiohttp.ClientSession()
+    try:
+        response = await session.get(file_url, headers=headers)
+        response.raise_for_status() # Raise an exception for 4xx/5xx responses
+        return response.content, response.status, dict(response.headers), session # Return session for closing
+    except aiohttp.ClientError as e:
+        logger.error(f"Aiohttp client error during download: {e}")
+        await session.close() # Close session on error
+        raise # Re-raise to be caught by caller
+
 
 # Flask Routes
 @flask_app.route('/')
@@ -222,6 +225,14 @@ def stream_file(file_id):
     audio_track = request.args.get('audio', '0')
     quality = request.args.get('quality', 'original')
     
+    # Get the current event loop for this thread, or create one if it doesn't exist.
+    # This is crucial for running aiohttp operations in a synchronous Flask context.
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
     # Handle range requests
     range_header = request.environ.get('HTTP_RANGE', '').strip()
     range_match = None
@@ -234,28 +245,26 @@ def stream_file(file_id):
         end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
         
         def generate_range():
+            content_stream = None
+            session = None # Keep session reference for closing
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                content_stream, status, headers = loop.run_until_complete(
+                # Download the initial part to get the StreamReader and session
+                content_stream, _, _, session = loop.run_until_complete(
                     download_telegram_file(file_url, start, end)
                 )
-                if content_stream:
-                    # Async streaming of chunks
-                    async def stream_chunks():
-                        async for chunk in content_stream.iter_chunked(8192):
-                            yield chunk
-                    
-                    # Run the async generator in the current loop
-                    for chunk in loop.run_until_complete(stream_chunks().__anext__()): # Get first chunk
-                        yield chunk
-                    # Continue streaming remaining chunks
-                    for chunk in loop.run_until_complete(asyncio.to_thread(lambda: [c async for c in content_stream.iter_chunked(8192)])):
-                        yield chunk
-                        
+                
+                # Now, continuously read chunks from the StreamReader synchronously
+                while True:
+                    # This will block the current thread until a chunk is available or stream ends
+                    chunk = loop.run_until_complete(content_stream.read(8192))
+                    if not chunk: # End of stream
+                        break
+                    yield chunk
             except Exception as e:
                 logger.error(f"Error streaming range for {file_id}: {e}")
-                return
+            finally:
+                if session:
+                    loop.run_until_complete(session.close()) # Ensure session is closed
         
         response = Response(
             generate_range(),
@@ -272,28 +281,23 @@ def stream_file(file_id):
         )
     else:
         def generate_full():
+            content_stream = None
+            session = None # Keep session reference for closing
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                content_stream, status, headers = loop.run_until_complete(
+                content_stream, _, _, session = loop.run_until_complete(
                     download_telegram_file(file_url)
                 )
-                if content_stream:
-                    # Async streaming of chunks
-                    async def stream_chunks():
-                        async for chunk in content_stream.iter_chunked(8192):
-                            yield chunk
-                    
-                    # Run the async generator in the current loop
-                    for chunk in loop.run_until_complete(stream_chunks().__anext__()): # Get first chunk
-                        yield chunk
-                    # Continue streaming remaining chunks
-                    for chunk in loop.run_until_complete(asyncio.to_thread(lambda: [c async for c in content_stream.iter_chunked(8192)])):
-                        yield chunk
-                        
+                
+                while True:
+                    chunk = loop.run_until_complete(content_stream.read(8192))
+                    if not chunk:
+                        break
+                    yield chunk
             except Exception as e:
                 logger.error(f"Error streaming full file for {file_id}: {e}")
-                return
+            finally:
+                if session:
+                    loop.run_until_complete(session.close()) # Ensure session is closed
         
         response = Response(
             generate_full(),
@@ -492,20 +496,25 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = str(uuid.uuid4())
         
         temp_file_path = None
+        current_loop_for_temp_download = None
+        temp_session = None
+        try:
+            current_loop_for_temp_download = asyncio.get_event_loop()
+        except RuntimeError:
+            current_loop_for_temp_download = asyncio.new_event_loop()
+            asyncio.set_event_loop(current_loop_for_temp_download)
+
         try:
             # Download a small portion for metadata extraction
             with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_file:
                 temp_file_path = temp_file.name
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(file_url, headers={'Range': 'bytes=0-10485760'}) as response: # First 10MB
-                        if response.status in [200, 206]:
-                            async for chunk in response.content.iter_chunked(8192):
-                                temp_file.write(chunk)
-                                break # Just need a small sample
-                        else:
-                            logger.error(f"Failed to download sample for metadata: {response.status}")
-                            raise Exception("Failed to download file sample for metadata extraction.")
-                
+                temp_session = aiohttp.ClientSession()
+                async with temp_session.get(file_url, headers={'Range': 'bytes=0-10485760'}) as response: # First 10MB
+                    response.raise_for_status() # Raise for HTTP errors
+                    async for chunk in response.content.iter_chunked(8192):
+                        temp_file.write(chunk)
+                        break # Just need a small sample
+            
             video_metadata = VideoMetadata(temp_file_path)
             
         except Exception as e:
@@ -517,7 +526,9 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     os.unlink(temp_file_path)
                 except Exception as e:
                     logger.error(f"Error cleaning up temp file {temp_file_path}: {e}")
-        
+            if temp_session:
+                current_loop_for_temp_download.run_until_complete(temp_session.close())
+
         # Store file info in MongoDB
         file_document = {
             '_id': file_id, # Use file_id as MongoDB document _id
