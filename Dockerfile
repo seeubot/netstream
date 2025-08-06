@@ -1,5 +1,6 @@
 # Use an official Python runtime as a parent image
-FROM python:3.10-slim-buster
+# Changed from buster to bullseye for active repositories
+FROM python:3.10-slim-bullseye
 
 # Install ffmpeg (which includes ffprobe) and other necessary build tools
 # We use apt-get for Debian-based images
@@ -20,9 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Expose the port Flask will run on
 EXPOSE 5000
 
-# Run the application
-# CMD ["python", "your_main_script_name.py"]
-# Use a more robust production-ready WSGI server like Gunicorn
+# Run the application using Gunicorn
 # Assuming your main script is named 'main.py' and your Flask app instance is 'flask_app'
+# IMPORTANT: Replace 'main' with the actual name of your Python script file (without .py extension)
 CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "main:flask_app"]
 
