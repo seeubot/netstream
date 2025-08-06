@@ -15,7 +15,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import TelegramError
 from flask import Flask, Response, abort, jsonify, request, render_template_string
-import threading
+import threading # Still needed for Flask's internal server if __name__ == "__main__" but not for Gunicorn
 import aiohttp
 
 # MongoDB imports
@@ -389,7 +389,7 @@ def get_content_item(content_id):
         abort(404)
 
     # Also fetch the associated file_info from the files collection
-    file_info = files_collection.find_one({'_id': content_item['file_id']}, {'_id': 0})
+    file_info = files_collection.find_one({'file_id': content_item['file_id']}, {'_id': 0}) # Use file_id from content_item
     if file_info:
         content_item['file_info'] = file_info
 
@@ -448,14 +448,12 @@ async def telegram_webhook():
     update_json = request.get_json(force=True)
     update = Update.de_json(update_json, telegram_bot_app.bot)
 
-    # Process the update asynchronously
-    # Use telegram_bot_app.update_queue.put_nowait to add the update to the queue
-    # The Application.start() method (called in a separate thread) will consume this queue
     try:
-        await telegram_bot_app.update_queue.put(update)
+        # Process the update directly using process_update
+        await telegram_bot_app.process_update(update)
         return "ok"
     except Exception as e:
-        logger.error(f"Error putting update into queue: {e}")
+        logger.error(f"Error processing update: {e}")
         return "Error processing update", 500
 
 
@@ -539,24 +537,16 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = str(uuid.uuid4())
 
         temp_file_path = None
-        current_loop_for_temp_download = None
-        temp_session = None
-        try:
-            current_loop_for_temp_download = asyncio.get_event_loop()
-        except RuntimeError:
-            current_loop_for_temp_download = asyncio.new_event_loop()
-            asyncio.set_event_loop(current_loop_for_temp_download)
-
         try:
             # Download a small portion for metadata extraction
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_file:
-                temp_file_path = temp_file.name
-                temp_session = aiohttp.ClientSession()
-                async with temp_session.get(file_url, headers={'Range': 'bytes=0-10485760'}) as response: # First 10MB
-                    response.raise_for_status() # Raise for HTTP errors
-                    async for chunk in response.content.iter_chunked(8192):
-                        temp_file.write(chunk)
-                        break # Just need a small sample
+            async with aiohttp.ClientSession() as session: # Create session within async function
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as temp_file:
+                    temp_file_path = temp_file.name
+                    async with session.get(file_url, headers={'Range': 'bytes=0-10485760'}) as response: # First 10MB
+                        response.raise_for_status() # Raise for HTTP errors
+                        async for chunk in response.content.iter_chunked(8192):
+                            temp_file.write(chunk)
+                            break # Just need a small sample
 
             video_metadata = VideoMetadata(temp_file_path)
 
@@ -569,8 +559,6 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     os.unlink(temp_file_path)
                 except Exception as e:
                     logger.error(f"Error cleaning up temp file {temp_file_path}: {e}")
-            if temp_session:
-                current_loop_for_temp_download.run_until_complete(temp_session.close())
 
         # Store file info in MongoDB
         file_document = {
@@ -987,8 +975,13 @@ async def set_telegram_webhook(bot_app_instance: Application):
     webhook_url = f"https://{public_domain}{webhook_path}"
 
     try:
-        await bot_app_instance.bot.set_webhook(url=webhook_url)
-        logger.info(f"Telegram webhook set to: {webhook_url}")
+        # Get current webhook info to avoid unnecessary calls
+        current_webhook_info = await bot_app_instance.bot.get_webhook_info()
+        if current_webhook_info.url != webhook_url:
+            await bot_app_instance.bot.set_webhook(url=webhook_url)
+            logger.info(f"Telegram webhook set to: {webhook_url}")
+        else:
+            logger.info(f"Telegram webhook already correctly set to: {webhook_url}")
     except TelegramError as e:
         logger.error(f"Failed to set Telegram webhook: {e}")
 
@@ -1032,26 +1025,21 @@ def create_app():
     telegram_bot_app.add_handler(CallbackQueryHandler(handle_categorization))
     telegram_bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
 
-    # Start the bot's update processing in a separate thread
-    # This consumes updates from telegram_bot_app.update_queue
-    # We use a new event loop for the thread as asyncio.run() expects a fresh one
-    def run_bot_polling_in_thread(loop):
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(telegram_bot_app.run_polling(drop_pending_updates=True))
-
-    new_loop = asyncio.new_event_loop()
-    bot_processing_thread = threading.Thread(target=run_bot_polling_in_thread, args=(new_loop,))
-    bot_processing_thread.daemon = True # Allow the main program to exit even if this thread is running
-    bot_processing_thread.start()
-    logger.info("Telegram bot processing thread started.")
-
     # Set the webhook asynchronously after the Flask app starts
-    # This needs to be done only once on startup
-    # Since create_app is called by Gunicorn, we need to ensure this runs in an event loop
-    # We'll use a new thread for this too, or rely on the main thread's event loop if available
-    # For Gunicorn, it's safer to have this run in the context of the main app startup
-    # We'll use asyncio.run directly here, as create_app is called once.
-    asyncio.run(set_telegram_webhook(telegram_bot_app))
+    # This needs to be done only once on startup.
+    # When running with Gunicorn, create_app is called by each worker.
+    # To avoid setting the webhook multiple times, we run it in a separate thread
+    # and manage its lifecycle. However, the simplest fix for the RuntimeError
+    # is to remove the polling entirely, and rely on the webhook.
+    # The webhook setting itself should ideally be done by a single process.
+    # For now, we'll keep it here and rely on the idempotent check within set_telegram_webhook.
+    try:
+        # This will attempt to set the webhook. The idempotent check helps.
+        # It's run in a new event loop to avoid conflicts with Gunicorn's main loop.
+        # This is a common pattern for one-off async tasks in sync contexts.
+        asyncio.run(set_telegram_webhook(telegram_bot_app))
+    except RuntimeError as e:
+        logger.warning(f"Could not set webhook immediately: {e}. It might be set by another worker or later.")
     
     return flask_app
 
