@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import TelegramError
-from flask import Flask, Response, abort, jsonify, request
+from flask import Flask, Response, abort, jsonify, request, render_template # Added render_template
 import threading
 import aiohttp
 
@@ -38,7 +38,8 @@ SUPPORTED_VIDEO_FORMATS = {
 }
 
 # Flask app for serving files
-flask_app = Flask(__name__)
+# IMPORTANT: Specify the template_folder to tell Flask where to find your HTML files.
+flask_app = Flask(__name__, template_folder='templates')
 
 # Store file metadata with enhanced structure
 file_registry = {}
@@ -169,6 +170,11 @@ async def download_telegram_file(file_url, start_byte=0, end_byte=None):
             return None, response.status, {}
 
 # Flask Routes
+@flask_app.route('/') # New route to serve the frontend
+def serve_frontend():
+    """Serve the main frontend HTML page."""
+    return render_template('index.html')
+
 @flask_app.route('/stream/<file_id>')
 def stream_file(file_id):
     """Stream video file with support for range requests and audio track selection"""
@@ -935,3 +941,4 @@ Starting bot...
     except Exception as e:
         print(f"❌ Error: {e}")
         print("\nPlease check your environment variables and try again.")
+
