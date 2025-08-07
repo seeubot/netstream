@@ -13,15 +13,15 @@ import sys
 from urllib.parse import quote
 import time
 import atexit
+import requests
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import TelegramError
 from flask import Flask, Response, abort, jsonify, request, render_template_string
-import requests
 from pymongo import MongoClient
 import pymongo.errors
-from waitress import serve # Import Waitress for production serving
+from waitress import serve
 
 # Configure logging for production
 logging.basicConfig(
@@ -58,6 +58,7 @@ app_state = {
     'files_collection': None,
     'content_collection': None,
     'bot_app': None,
+    'webhook_set': False
 }
 
 # Supported formats
@@ -150,7 +151,7 @@ app.config.update({
     'JSONIFY_PRETTYPRINT_REGULAR': False
 })
 
-# Modern Netflix-style frontend (same as before)
+# Modern Netflix-style frontend
 FRONTEND_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -567,16 +568,27 @@ def health_check():
     except Exception as e:
         health_status['services']['mongodb'] = f'error: {str(e)[:50]}'
         health_status['status'] = 'degraded'
+    
     health_status['services']['telegram_bot'] = 'ok' if app_state['bot_app'] else 'not_initialized'
+    health_status['services']['webhook'] = 'set' if app_state['webhook_set'] else 'not_set'
+    
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
 @app.route(WEBHOOK_PATH, methods=['POST'])
-async def webhook_handler():
+def webhook_handler():
     """Handles incoming Telegram updates from the webhook."""
     try:
         update = Update.de_json(request.get_json(force=True), app_state['bot_app'].bot)
-        # Use a background task to process the update so Flask can respond immediately
-        await app_state['bot_app'].process_update(update)
+        # Process the update in a separate thread to not block Flask
+        def process_update():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(app_state['bot_app'].process_update(update))
+            finally:
+                loop.close()
+        
+        threading.Thread(target=process_update, daemon=True).start()
         return 'OK'
     except Exception as e:
         logger.error(f"Error processing webhook update: {e}")
@@ -930,21 +942,40 @@ def close_mongodb_connection():
         logger.info("Closing MongoDB connection.")
         app_state['mongo_client'].close()
 
-async def set_initial_webhook():
-    """
-    Sets the webhook at startup. This is a one-time operation.
-    """
+def set_webhook_sync():
+    """Set webhook synchronously using requests"""
     try:
         webhook_url = f"{WEBHOOK_URL.rstrip('/')}{WEBHOOK_PATH}"
         logger.info(f"Setting webhook to: {webhook_url}")
-        # Make sure the bot is initialized before setting the webhook
-        if app_state['bot_app']:
-            await app_state['bot_app'].bot.set_webhook(url=webhook_url)
-            logger.info("✅ Webhook set successfully!")
+        
+        # Use requests to set the webhook synchronously
+        telegram_api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+        response = requests.post(
+            telegram_api_url,
+            json={'url': webhook_url},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                app_state['webhook_set'] = True
+                logger.info("✅ Webhook set successfully!")
+            else:
+                logger.error(f"Failed to set webhook: {result.get('description')}")
         else:
-            logger.error("Bot application is not initialized. Cannot set webhook.")
+            logger.error(f"Failed to set webhook: HTTP {response.status_code}")
+            
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
+
+def setup_webhook_delayed():
+    """Set up webhook after a short delay to ensure server is ready"""
+    def delayed_setup():
+        time.sleep(5)  # Wait 5 seconds for server to be fully ready
+        set_webhook_sync()
+    
+    threading.Thread(target=delayed_setup, daemon=True).start()
 
 def main():
     """Main function to initialize and run the application."""
@@ -959,16 +990,12 @@ def main():
 
     atexit.register(close_mongodb_connection)
     
-    # We'll run the webhook setup in a separate thread to not block the main process.
-    # The application will start serving immediately, and the webhook will be
-    # configured in the background.
-    threading.Thread(target=lambda: asyncio.run(set_initial_webhook()), daemon=True).start()
+    # Set up webhook after server starts
+    setup_webhook_delayed()
 
     # Use Waitress, a production-ready WSGI server, to serve the Flask app
     logger.info("Starting Flask application with Waitress...")
-    # The app.run call is replaced by serve for production environments.
     serve(app, host='0.0.0.0', port=PORT, threads=10)
 
 if __name__ == '__main__':
     main()
-
