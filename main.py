@@ -203,8 +203,9 @@ async def setup_webhook():
         return False
 
 # Flask application
-flask_app = Flask(__name__)
-flask_app.config.update({
+# RENAMED from flask_app to app to satisfy Gunicorn's default behavior
+app = Flask(__name__)
+app.config.update({
     'JSON_SORT_KEYS': False,
     'JSONIFY_PRETTYPRINT_REGULAR': False
 })
@@ -593,12 +594,12 @@ FRONTEND_HTML = """
 """
 
 # Flask Routes
-@flask_app.route('/')
+@app.route('/')
 def serve_frontend():
     """Serve the main frontend"""
     return render_template_string(FRONTEND_HTML)
 
-@flask_app.route('/health')
+@app.route('/health')
 def health_check():
     """Comprehensive health check"""
     health_status = {
@@ -625,7 +626,7 @@ def health_check():
     
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
-@flask_app.route('/api/content')
+@app.route('/api/content')
 def get_content_library():
     """Get content library with error handling"""
     try:
@@ -666,7 +667,7 @@ def get_content_library():
             'error': 'Internal server error'
         }), 500
 
-@flask_app.route('/stream/<file_id>')
+@app.route('/stream/<file_id>')
 def stream_file(file_id):
     """Stream video files with range request support"""
     try:
@@ -747,7 +748,7 @@ def stream_file(file_id):
         logger.error(f"Stream error for {file_id}: {e}")
         abort(500)
 
-@flask_app.route('/telegram-webhook', methods=['POST'])
+@app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
     """Handle Telegram webhook updates"""
     if not app_state['bot_app']:
@@ -770,7 +771,7 @@ def telegram_webhook():
         logger.error(f"Webhook error: {e}")
         return "Error", 500
 
-@flask_app.route('/setup-webhook', methods=['POST', 'GET'])
+@app.route('/setup-webhook', methods=['POST', 'GET'])
 async def manual_webhook_setup():
     """Manual webhook setup endpoint"""
     try:
@@ -1196,7 +1197,7 @@ if __name__ == '__main__':
     
     # Start Flask application
     logger.info(f"🌐 Starting Flask server on port {PORT}")
-    flask_app.run(
+    app.run(
         host='0.0.0.0',
         port=PORT,
         debug=False,
