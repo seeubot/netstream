@@ -11,6 +11,7 @@ import threading
 import signal
 import sys
 from urllib.parse import quote
+import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -50,7 +51,6 @@ app_state = {
     'files_collection': None,
     'content_collection': None,
     'bot_app': None,
-    'webhook_set': False,
     'shutdown': False
 }
 
@@ -64,7 +64,6 @@ def get_koyeb_domain():
     """Get the Koyeb domain from environment"""
     domain = os.getenv('KOYEB_PUBLIC_DOMAIN')
     if not domain:
-        # Try alternative environment variables
         domain = os.getenv('KOYEB_DOMAIN') or os.getenv('PUBLIC_DOMAIN')
     
     if not domain:
@@ -170,40 +169,7 @@ async def initialize_telegram_bot():
         logger.error(f"❌ Telegram bot initialization failed: {e}")
         return False
 
-async def setup_webhook():
-    """Set up Telegram webhook"""
-    domain = get_koyeb_domain()
-    if not domain or not BOT_TOKEN:
-        logger.error("❌ Missing domain or bot token for webhook setup")
-        return False
-    
-    webhook_url = f"https://{domain}/telegram-webhook"
-    
-    try:
-        set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
-        payload = {
-            "url": webhook_url,
-            "drop_pending_updates": True,
-            "allowed_updates": ["message", "callback_query"]
-        }
-        
-        response = requests.post(set_url, json=payload, timeout=15)
-        result = response.json()
-        
-        if response.status_code == 200 and result.get('ok'):
-            app_state['webhook_set'] = True
-            logger.info(f"✅ Webhook set successfully: {webhook_url}")
-            return True
-        else:
-            logger.error(f"❌ Webhook setup failed: {result}")
-            return False
-            
-    except Exception as e:
-        logger.error(f"❌ Error setting webhook: {e}")
-        return False
-
 # Flask application
-# RENAMED from flask_app to app to satisfy Gunicorn's default behavior
 app = Flask(__name__)
 app.config.update({
     'JSON_SORT_KEYS': False,
@@ -622,7 +588,6 @@ def health_check():
     
     # Check Bot
     health_status['services']['telegram_bot'] = 'ok' if app_state['bot_app'] else 'not_initialized'
-    health_status['services']['webhook'] = 'set' if app_state['webhook_set'] else 'not_set'
     
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
@@ -747,43 +712,6 @@ def stream_file(file_id):
     except Exception as e:
         logger.error(f"Stream error for {file_id}: {e}")
         abort(500)
-
-@app.route('/telegram-webhook', methods=['POST'])
-def telegram_webhook():
-    """Handle Telegram webhook updates"""
-    if not app_state['bot_app']:
-        logger.error("Bot not ready for webhook")
-        return "Bot not ready", 503
-
-    try:
-        update_json = request.get_json(force=True)
-        if not update_json:
-            return "Invalid JSON", 400
-
-        update = Update.de_json(update_json, app_state['bot_app'].bot)
-        
-        # Process update in background to avoid blocking
-        asyncio.create_task(app_state['bot_app'].process_update(update))
-        
-        return "OK", 200
-
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return "Error", 500
-
-@app.route('/setup-webhook', methods=['POST', 'GET'])
-async def manual_webhook_setup():
-    """Manual webhook setup endpoint"""
-    try:
-        success = await setup_webhook()
-        return jsonify({
-            'success': success,
-            'webhook_set': app_state['webhook_set'],
-            'domain': get_koyeb_domain()
-        })
-    except Exception as e:
-        logger.error(f"Manual webhook setup error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 # Telegram Bot Handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -929,7 +857,6 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         
-        # Get file info
         if update.message.video:
             file_obj = update.message.video
             file_size = file_obj.file_size
@@ -948,24 +875,19 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ No valid file detected")
             return
         
-        # Check file size
         if file_size and file_size > MAX_FILE_SIZE:
             await update.message.reply_text(
                 f"❌ File too large. Maximum size: {MAX_FILE_SIZE // (1024*1024)}MB"
             )
             return
         
-        # Send processing message
         processing_msg = await update.message.reply_text("🎬 Processing your video...")
         
-        # Get file from Telegram
         file = await context.bot.get_file(file_obj.file_id)
         file_url = file.file_path
         
-        # Generate unique file ID
         file_id = str(uuid.uuid4())
         
-        # Store file info in database
         file_doc = {
             '_id': file_id,
             'user_id': user_id,
@@ -979,11 +901,9 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         app_state['files_collection'].insert_one(file_doc)
         
-        # Generate streaming URL
         domain = get_koyeb_domain()
         stream_url = f"https://{domain}/stream/{file_id}" if domain else f"https://your-app.koyeb.app/stream/{file_id}"
         
-        # Store context for categorization
         context.user_data['pending_file'] = {
             'file_id': file_id,
             'filename': filename,
@@ -991,7 +911,6 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'user_id': user_id
         }
         
-        # Send categorization options
         keyboard = [
             [InlineKeyboardButton("🎬 Movie", callback_data="type_movie")],
             [InlineKeyboardButton("📺 Series", callback_data="type_series")]
@@ -1064,7 +983,6 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
         content_type = context.user_data['content_type']
         metadata_text = update.message.text
         
-        # Parse metadata
         metadata = {}
         lines = metadata_text.strip().split('\n')
         
@@ -1077,12 +995,10 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
                 if key in ['title', 'year', 'season', 'episode', 'genre', 'description']:
                     metadata[key] = value
         
-        # Validate required fields
         if not metadata.get('title'):
             await update.message.reply_text("❌ Title is required. Please try again.")
             return
         
-        # Prepare content document
         content_doc = {
             '_id': str(uuid.uuid4()),
             'file_id': file_info['file_id'],
@@ -1093,27 +1009,22 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
             'added_by': file_info['user_id'],
             'added_date': datetime.now(),
             'description': metadata.get('description', ''),
-            'genre': metadata.get('genre', '').split(',') if metadata.get('genre') else []
+            'genre': [g.strip() for g in metadata.get('genre', '').split(',')] if metadata.get('genre') else []
         }
         
-        # Add type-specific fields
         if content_type == 'movie':
             content_doc['year'] = metadata.get('year', '')
         elif content_type == 'series':
             content_doc['season'] = metadata.get('season', '')
             content_doc['episode'] = metadata.get('episode', '')
         
-        # Save to database
         app_state['content_collection'].insert_one(content_doc)
         
-        # Clear user data
         context.user_data.clear()
         
-        # Get frontend URL
         domain = get_koyeb_domain()
         frontend_url = f"https://{domain}" if domain else "https://your-app.koyeb.app"
         
-        # Send success message
         success_text = f"""
 ✅ **Content Added Successfully!**
 
@@ -1132,25 +1043,33 @@ Ready for your next upload! 🚀
         logger.error(f"Metadata input error: {e}")
         await update.message.reply_text("❌ Error saving content. Please try again.")
 
-# Application Initialization
+def run_flask_app():
+    """Start the Flask application"""
+    logger.info(f"🌐 Starting Flask server on port {PORT}")
+    app.run(
+        host='0.0.0.0',
+        port=PORT,
+        debug=False,
+        use_reloader=False
+    )
+
+def run_bot_polling():
+    """Start the bot with long polling"""
+    logger.info("🤖 Starting Telegram bot with long polling...")
+    app_state['bot_app'].run_polling(poll_interval=2.0)
+
 async def initialize_application():
     """Initialize the complete application"""
     logger.info("🚀 Starting StreamFlix application...")
     
     try:
-        # Initialize MongoDB
         if not await initialize_mongodb():
             logger.error("❌ Failed to initialize MongoDB")
             return False
         
-        # Initialize Telegram Bot
         if not await initialize_telegram_bot():
             logger.error("❌ Failed to initialize Telegram Bot")
             return False
-        
-        # Setup Webhook
-        if not await setup_webhook():
-            logger.warning("⚠️ Webhook setup failed, but continuing...")
         
         logger.info("✅ Application initialized successfully!")
         return True
@@ -1164,20 +1083,16 @@ def signal_handler(signum, frame):
     logger.info(f"Received signal {signum}, shutting down gracefully...")
     app_state['shutdown'] = True
     
-    # Close MongoDB connection
     if app_state['mongo_client']:
         app_state['mongo_client'].close()
         logger.info("MongoDB connection closed")
     
     sys.exit(0)
 
-# Main execution
 if __name__ == '__main__':
-    # Register signal handlers
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Check required environment variables
     if not BOT_TOKEN:
         logger.error("❌ BOT_TOKEN environment variable is required")
         sys.exit(1)
@@ -1185,23 +1100,21 @@ if __name__ == '__main__':
     if not STORAGE_CHANNEL_ID:
         logger.warning("⚠️ STORAGE_CHANNEL_ID not set")
     
-    # Run initialization in event loop
-    async def startup():
-        success = await initialize_application()
-        if not success:
-            logger.error("❌ Failed to initialize application")
-            sys.exit(1)
+    asyncio.run(initialize_application())
     
-    # Run startup
-    asyncio.run(startup())
-    
-    # Start Flask application
-    logger.info(f"🌐 Starting Flask server on port {PORT}")
-    app.run(
-        host='0.0.0.0',
-        port=PORT,
-        debug=False,
-        threaded=True,
-        use_reloader=False
-    )
+    # Run Flask and the bot in separate threads
+    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+    bot_thread = threading.Thread(target=run_bot_polling, daemon=True)
+
+    flask_thread.start()
+    bot_thread.start()
+
+    # Keep the main thread alive to handle signals and manage threads
+    try:
+        while not app_state['shutdown']:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received, shutting down...")
+    finally:
+        logger.info("Main thread exiting.")
 
