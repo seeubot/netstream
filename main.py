@@ -51,7 +51,6 @@ MAX_FILE_SIZE = 4000 * 1024 * 1024  # 4GB
 
 # Webhook configuration
 WEBHOOK_PATH = f'/{uuid.uuid4()}'
-WEBHOOK_URL = 'https://intellectual-leora-school1660440-2c2cd71f.koyeb.app'
 
 # Global state
 app_state = {
@@ -62,7 +61,8 @@ app_state = {
     'bot_app': None,
     'webhook_set': False,
     'shutdown_event': threading.Event(),
-    'update_queue': None
+    'update_queue': None,
+    'webhook_url': None
 }
 
 # Supported formats
@@ -72,8 +72,8 @@ SUPPORTED_VIDEO_FORMATS = {
 }
 
 def get_deployment_domain():
-    """Get the deployment domain from environment variables or hardcoded value."""
-    domain = WEBHOOK_URL or (
+    """Get the deployment domain from environment variables."""
+    domain = (
         os.getenv('KOYEB_PUBLIC_DOMAIN') or
         os.getenv('KOYEB_DOMAIN') or
         os.getenv('PUBLIC_DOMAIN') or
@@ -82,11 +82,13 @@ def get_deployment_domain():
         os.getenv('RENDER_EXTERNAL_URL')
     )
     if not domain:
-        logger.warning("No deployment domain found in environment variables")
+        logger.warning("No deployment domain found in environment variables. Webhook will likely fail.")
         return None
     if not domain.startswith('http'):
         domain = f"https://{domain}"
-    return domain
+    
+    # Strip trailing slash if present
+    return domain.rstrip('/')
 
 def is_video_file(filename):
     """Check if file is a supported video format"""
@@ -528,27 +530,6 @@ FRONTEND_HTML = """
 </html>
 """
 
-def initialize_telegram_bot_app():
-    """Initialize Telegram bot application with handlers"""
-    if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN not provided")
-        return None
-    try:
-        app_state['update_queue'] = queue.Queue()
-        bot_app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
-        bot_app.add_handler(CommandHandler("start", start_command))
-        bot_app.add_handler(CommandHandler("library", library_command))
-        bot_app.add_handler(CommandHandler("frontend", frontend_command))
-        bot_app.add_handler(CommandHandler("stats", stats_command))
-        bot_app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video_file))
-        bot_app.add_handler(CallbackQueryHandler(handle_categorization))
-        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
-        logger.info("✅ Telegram bot initialized successfully!")
-        return bot_app
-    except Exception as e:
-        logger.error(f"❌ Telegram bot initialization failed: {e}")
-        return None
-
 # Flask Routes
 @app.route('/')
 def serve_frontend():
@@ -579,6 +560,19 @@ def health_check():
     
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
+@app.route('/check-webhook')
+def check_webhook_url():
+    """Returns the webhook URL being used by the server."""
+    if not app_state['webhook_url']:
+        return jsonify({
+            'status': 'error',
+            'message': 'Webhook URL not set yet. Please check server logs.'
+        }), 500
+    return jsonify({
+        'status': 'ok',
+        'webhook_url': app_state['webhook_url']
+    })
+
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook_handler():
     """Handles incoming Telegram updates from the webhook."""
@@ -597,10 +591,8 @@ def webhook_handler():
 def get_content_library():
     """
     Get content library with error handling.
-    FIX: Corrected the check for the database collection.
     """
     try:
-        # The key fix is here: check if the collection is None, not if it's "not truthy".
         if app_state['content_collection'] is None:
             return jsonify({
                 'movies': [],
@@ -637,10 +629,8 @@ def get_content_library():
 def stream_file(file_id):
     """
     Stream video files with range request support.
-    FIX: Corrected the check for the database collection.
     """
     try:
-        # Apply the same fix to this function for consistency.
         if app_state['files_collection'] is None:
             abort(503)
         file_info = app_state['files_collection'].find_one(
@@ -712,7 +702,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
     try:
         domain = get_deployment_domain()
-        frontend_url = domain if domain else "https://your-app.herokuapp.com"
+        frontend_url = domain if domain else "https://your-app.koyeb.app"
         welcome_text = f"""
 🎬 **StreamFlix - Your Personal Netflix** 🎬
 Welcome to your own streaming platform! Transform any video into a Netflix-style streaming experience.
@@ -943,6 +933,27 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Handle metadata input error: {e}")
         await update.message.reply_text("An error occurred while saving the metadata. Please try again.")
 
+def initialize_telegram_bot_app():
+    """Initialize Telegram bot application with handlers"""
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN not provided")
+        return None
+    try:
+        app_state['update_queue'] = queue.Queue()
+        bot_app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
+        bot_app.add_handler(CommandHandler("start", start_command))
+        bot_app.add_handler(CommandHandler("library", library_command))
+        bot_app.add_handler(CommandHandler("frontend", frontend_command))
+        bot_app.add_handler(CommandHandler("stats", stats_command))
+        bot_app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video_file))
+        bot_app.add_handler(CallbackQueryHandler(handle_categorization))
+        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
+        logger.info("✅ Telegram bot initialized successfully!")
+        return bot_app
+    except Exception as e:
+        logger.error(f"❌ Telegram bot initialization failed: {e}")
+        return None
+
 def close_mongodb_connection():
     """Close MongoDB connection on exit."""
     if app_state['mongo_client']:
@@ -952,10 +963,14 @@ def close_mongodb_connection():
 def set_webhook_sync():
     """
     Set webhook synchronously using requests with retry logic.
-    FIX: Added a robust retry mechanism with exponential backoff to handle
-    transient network errors.
     """
-    webhook_url = f"{WEBHOOK_URL.rstrip('/')}{WEBHOOK_PATH}"
+    domain = get_deployment_domain()
+    if not domain:
+        logger.error("❌ Cannot set webhook: Deployment domain not found.")
+        return
+
+    webhook_url = f"{domain}{WEBHOOK_PATH}"
+    app_state['webhook_url'] = webhook_url
     logger.info(f"Setting webhook to: {webhook_url}")
 
     max_retries = 5
@@ -984,7 +999,6 @@ def set_webhook_sync():
         except requests.exceptions.RequestException as e:
             logger.warning(f"Connection error on webhook setup (attempt {attempt + 1}): {e}")
 
-        # If it's not the last attempt, calculate and wait for the next backoff delay
         if attempt < max_retries - 1:
             delay = initial_delay * (2 ** attempt)
             logger.info(f"Retrying in {delay} seconds...")
@@ -996,8 +1010,6 @@ def run_bot_worker():
     """Starts the bot application's update processing loop."""
     try:
         if app_state['bot_app']:
-            # The run_until_shutdown method processes updates from the update_queue
-            # and shuts down when the event is set.
             app_state['bot_app'].run_until_shutdown(
                 update_queue=app_state['update_queue'],
                 stop_event=app_state['shutdown_event']
@@ -1024,18 +1036,14 @@ def main():
 
     atexit.register(close_mongodb_connection)
     
-    # Start the bot's update processing in a separate thread
     bot_thread = threading.Thread(target=run_bot_worker, daemon=True)
     bot_thread.start()
     
-    # Set up webhook after server starts
     set_webhook_sync()
 
-    # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
-    # Use Waitress, a production-ready WSGI server, to serve the Flask app
     logger.info("Starting Flask application with Waitress...")
     serve(app, host='0.0.0.0', port=PORT, threads=10)
 
