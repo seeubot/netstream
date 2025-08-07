@@ -15,7 +15,7 @@ import time
 import atexit
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, WebhookServer
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.error import TelegramError
 from flask import Flask, Response, abort, jsonify, request, render_template_string
 import requests
@@ -47,8 +47,8 @@ PORT = int(os.getenv('PORT', 8080))
 MAX_FILE_SIZE = 4000 * 1024 * 1024  # 4GB
 
 # Webhook configuration
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Set this to your deployment URL
-WEBHOOK_PATH = '/webhook'
+WEBHOOK_PATH = f'/{uuid.uuid4()}'
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 
 # Global state
 app_state = {
@@ -57,7 +57,7 @@ app_state = {
     'files_collection': None,
     'content_collection': None,
     'bot_app': None,
-    'shutdown': False,
+    'shutdown_event': threading.Event(),
 }
 
 # Supported formats
@@ -530,7 +530,8 @@ def initialize_telegram_bot_app():
         logger.error("❌ BOT_TOKEN not provided")
         return None
     try:
-        bot_app = Application.builder().token(BOT_TOKEN).build()
+        # We must use an asyncio-compatible Application to handle the bot's logic
+        bot_app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
         bot_app.add_handler(CommandHandler("start", start_command))
         bot_app.add_handler(CommandHandler("library", library_command))
         bot_app.add_handler(CommandHandler("frontend", frontend_command))
@@ -570,6 +571,19 @@ def health_check():
         health_status['status'] = 'degraded'
     health_status['services']['telegram_bot'] = 'ok' if app_state['bot_app'] else 'not_initialized'
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
+
+# New webhook endpoint for Flask
+@app.route(WEBHOOK_PATH, methods=['POST'])
+async def webhook_handler():
+    """Handles incoming Telegram updates from the webhook."""
+    try:
+        update = Update.de_json(request.get_json(force=True), app_state['bot_app'].bot)
+        # Use a background task to process the update so Flask can respond immediately
+        await app_state['bot_app'].process_update(update)
+        return 'OK'
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/content')
 def get_content_library():
@@ -811,7 +825,11 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("An error occurred while uploading the file to the storage channel.")
             return
         file_id_in_channel = storage_message.effective_attachment.file_id
-        file_url = f"{get_deployment_domain().rstrip('/')}/stream/{file_id_in_channel}"
+        domain = get_deployment_domain()
+        if not domain:
+            await update.message.reply_text("Frontend URL is not configured. Cannot generate a stream link.")
+            return
+        file_url = f"{domain.rstrip('/')}/stream/{file_id_in_channel}"
         file_doc = {
             '_id': file_id_in_channel,
             'original_file_id': file_to_process.file_id,
@@ -915,6 +933,27 @@ def close_mongodb_connection():
         logger.info("Closing MongoDB connection.")
         app_state['mongo_client'].close()
 
+async def post_startup_tasks():
+    """Tasks to run after the application starts, like setting the webhook."""
+    try:
+        domain = get_deployment_domain()
+        if domain:
+            webhook_url = f"{domain.rstrip('/')}{WEBHOOK_PATH}"
+            logger.info(f"Setting webhook to: {webhook_url}")
+            await app_state['bot_app'].bot.set_webhook(url=webhook_url)
+            logger.info("✅ Webhook set successfully!")
+        else:
+            logger.warning("No deployment domain found. Skipping webhook setup.")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+
+def run_bot_in_thread():
+    """
+    Runs the bot's application in its own event loop within a thread.
+    This is necessary to handle asynchronous bot tasks while Flask runs synchronously.
+    """
+    asyncio.run(app_state['bot_app'].run_polling(drop_pending_updates=True))
+
 def main():
     """Main function to initialize and run the application."""
     if not initialize_mongodb():
@@ -928,19 +967,15 @@ def main():
 
     atexit.register(close_mongodb_connection)
     
-    # Use the bot's run_webhook method, providing the Flask app as a WSGI app.
-    # This correctly handles the event loop and serves both the bot and your web routes.
-    logger.info("Starting Telegram bot webhook server...")
-    app_state['bot_app'].run_webhook(
-        listen='0.0.0.0',
-        port=PORT,
-        url_path=WEBHOOK_PATH,
-        webhook_url=get_deployment_domain().rstrip('/') + WEBHOOK_PATH,
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-        max_connections=40,
-        webhook_server=WebhookServer(app=app)
-    )
+    # Run the bot in a separate thread so Flask can run in the main thread
+    # and handle incoming webhooks.
+    bot_thread = threading.Thread(target=run_bot_in_thread)
+    bot_thread.start()
+
+    # The Flask application will be the main entry point for the server.
+    # Its webhook route will forward updates to the bot thread.
+    logger.info("Starting Flask application...")
+    app.run(host='0.0.0.0', port=PORT, debug=False)
 
 if __name__ == '__main__':
     main()
