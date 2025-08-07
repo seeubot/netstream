@@ -44,7 +44,7 @@ STORAGE_CHANNEL_ID = os.getenv('STORAGE_CHANNEL_ID')
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb+srv://food:food@food.1jskkt3.mongodb.net/?retryWrites=true&w=majority&appName=food')
 DB_NAME = os.getenv('MONGO_DB_NAME', 'netflix_bot_db')
 PORT = int(os.getenv('PORT', 8080))
-MAX_FILE_SIZE = 4000 * 1024 * 1024  # 4GB
+MAX_FILE_SIZE = 4000 * 1024 * 1024  # 4GB, now greater than 2GB
 
 # Webhook configuration
 WEBHOOK_PATH = f'/{uuid.uuid4()}'
@@ -63,7 +63,8 @@ app_state = {
 # Supported formats
 SUPPORTED_VIDEO_FORMATS = {
     'mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v',
-    'mpg', 'mpeg', 'ogv', '3gp', 'rm', 'rmvb', 'asf', 'divx'
+    'mpg', 'mpeg', 'ogv', '3gp', 'rm', 'rmvb', 'asf', 'divx',
+    'ts', 'vob', 'ogg', 'hevc'
 }
 
 def get_deployment_domain():
@@ -101,7 +102,8 @@ def get_video_mime_type(filename):
         'mp4': 'video/mp4', 'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska',
         'mov': 'video/quicktime', 'wmv': 'video/x-ms-wmv', 'flv': 'video/x-flv',
         'webm': 'video/webm', 'm4v': 'video/mp4', 'mpg': 'video/mpeg',
-        'mpeg': 'video/mpeg', 'ogv': 'video/ogg', '3gp': 'video/3gpp'
+        'mpeg': 'video/mpeg', 'ogv': 'video/ogg', '3gp': 'video/3gpp',
+        'ts': 'video/mp2t', 'vob': 'video/dvd', 'ogg': 'video/ogg', 'hevc': 'video/hevc'
     }
     return mime_map.get(ext, 'video/mp4')
 
@@ -525,7 +527,7 @@ FRONTEND_HTML = """
 @app.route('/')
 async def serve_frontend():
     """Serve the main frontend"""
-    return render_template_string(FRONTEND_HTML)
+    return await render_template_string(FRONTEND_HTML)
 
 @app.route('/health')
 async def health_check():
@@ -792,12 +794,12 @@ async def handle_video_file(update, context):
         else:
             await update.message.reply_text("Please send a video file or a document containing a video.")
             return
+        filename = file_to_process.file_name
         if file_to_process.file_size > MAX_FILE_SIZE:
             await update.message.reply_text(
                 f"File size exceeds the {MAX_FILE_SIZE / (1024**3):.1f} GB limit."
             )
             return
-        filename = file_to_process.file_name
         if not is_video_file(filename):
             await update.message.reply_text(
                 "This file does not appear to be a supported video format. Please upload a valid video file."
@@ -998,7 +1000,7 @@ async def main():
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
     
-    # ❌ FIX: Explicitly initialize the Application instance
+    # FIX: Explicitly initialize the Application instance
     await app_state['bot_app'].initialize()
 
     # The Quart app needs an httpx client to handle async streaming
@@ -1019,5 +1021,4 @@ async def main():
 if __name__ == '__main__':
     # Use asyncio.run to start the async main function
     asyncio.run(main())
-
 
