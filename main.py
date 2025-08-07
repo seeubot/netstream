@@ -1,4 +1,4 @@
-import os
+Import os
 import uuid
 import asyncio
 import mimetypes
@@ -44,14 +44,14 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)
 # Configuration with defaults and validation
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 STORAGE_CHANNEL_ID = os.getenv('STORAGE_CHANNEL_ID')
-MONGO_URI = os.getenv('MONGO_URI', 'mongodb+srv://food:food@food.1jskkt3.mongodb.net/?retryWrites=True&w=majority&appName=food')
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb+srv://food:food@food.1jskkt3.mongodb.net/?retryWrites=true&w=majority&appName=food')
 DB_NAME = os.getenv('MONGO_DB_NAME', 'netflix_bot_db')
 PORT = int(os.getenv('PORT', 8080))
 MAX_FILE_SIZE = 4000 * 1024 * 1024  # 4GB
 
 # Webhook configuration
 WEBHOOK_PATH = f'/{uuid.uuid4()}'
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://intellectual-leora-school1660440-2c2cd71f.koyeb.app')
+WEBHOOK_URL = 'https://intellectual-leora-school1660440-2c2cd71f.koyeb.app'
 
 # Global state
 app_state = {
@@ -162,7 +162,7 @@ FRONTEND_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StreamFlix - Your Personal Netflix</title>
+    <title> Your Personal Netflix</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -390,7 +390,7 @@ FRONTEND_HTML = """
 </head>
 <body>
     <nav class="navbar">
-        <h1>🎬 StreamFlix</h1>
+        <h1>🎬 NFlix</h1>
     </nav>
 
     <div class="container">
@@ -573,16 +573,16 @@ def health_check():
     except Exception as e:
         health_status['services']['mongodb'] = f'error: {str(e)[:50]}'
         health_status['status'] = 'degraded'
-
+    
     health_status['services']['telegram_bot'] = 'ok' if app_state['bot_app'] else 'not_initialized'
     health_status['services']['webhook'] = 'set' if app_state['webhook_set'] else 'not_set'
-
+    
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook_handler():
     """Handles incoming Telegram updates from the webhook."""
-    if app_state['bot_app'] is None:
+    if not app_state['bot_app']:
         return jsonify({'error': 'Bot application not initialized'}), 503
     try:
         update = Update.de_json(request.get_json(force=True), app_state['bot_app'].bot)
@@ -597,7 +597,7 @@ def webhook_handler():
 def get_content_library():
     """Get content library with error handling"""
     try:
-        if app_state['content_collection'] is None:
+        if not app_state['content_collection']:
             return jsonify({
                 'movies': [],
                 'series': [],
@@ -633,7 +633,7 @@ def get_content_library():
 def stream_file(file_id):
     """Stream video files with range request support"""
     try:
-        if app_state['files_collection'] is None:
+        if not app_state['files_collection']:
             abort(503)
         file_info = app_state['files_collection'].find_one(
             {'_id': file_id},
@@ -734,7 +734,7 @@ Ready to build your streaming empire! 🚀
 async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display the content library from the database."""
     try:
-        if app_state['content_collection'] is None:
+        if not app_state['content_collection']:
             await update.message.reply_text("Database is not available. Please try again later.")
             return
         await update.message.reply_text("Fetching your library... Please wait.")
@@ -773,7 +773,7 @@ async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display statistics about the content library."""
     try:
-        if app_state['content_collection'] is None or app_state['files_collection'] is None:
+        if not app_state['content_collection'] or not app_state['files_collection']:
             await update.message.reply_text("Database is not available. Please try again later.")
             return
         movies_count = app_state['content_collection'].count_documents({'type': 'movie'})
@@ -902,7 +902,7 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
     """Handle text input for metadata and update the content document."""
     try:
         content_id = context.user_data.pop('current_metadata_id', None)
-        if content_id is None:
+        if not content_id:
             return
         text = update.message.text
         metadata = {}
@@ -946,7 +946,7 @@ def set_webhook_sync():
     try:
         webhook_url = f"{WEBHOOK_URL.rstrip('/')}{WEBHOOK_PATH}"
         logger.info(f"Setting webhook to: {webhook_url}")
-
+        
         # Use requests to set the webhook synchronously
         telegram_api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
         response = requests.post(
@@ -954,7 +954,7 @@ def set_webhook_sync():
             json={'url': webhook_url},
             timeout=30
         )
-
+        
         if response.status_code == 200:
             result = response.json()
             if result.get('ok'):
@@ -963,28 +963,21 @@ def set_webhook_sync():
             else:
                 logger.error(f"Failed to set webhook: {result.get('description')}")
         else:
-            logger.error(f"Failed to set webhook: HTTP {response.status_code} - {response.text}")
-
+            logger.error(f"Failed to set webhook: HTTP {response.status_code}")
+            
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
 
 def run_bot_worker():
     """Starts the bot application's update processing loop."""
     try:
-        if app_state['bot_app'] is None:
-            logger.error("Bot application not initialized.")
-            return
-
-        # It's crucial to give the Flask app time to start before setting the webhook
-        time.sleep(5)
-        set_webhook_sync()
-
-        # The run_until_shutdown method processes updates from the update_queue
-        # and shuts down when the event is set.
-        app_state['bot_app'].run_until_shutdown(
-            update_queue=app_state['update_queue'],
-            stop_event=app_state['shutdown_event']
-        )
+        if app_state['bot_app']:
+            # The run_until_shutdown method processes updates from the update_queue
+            # and shuts down when the event is set.
+            app_state['bot_app'].run_until_shutdown(
+                update_queue=app_state['update_queue'],
+                stop_event=app_state['shutdown_event']
+            )
     except Exception as e:
         logger.error(f"Bot worker thread failed: {e}")
 
@@ -996,33 +989,31 @@ def shutdown_handler(signum, frame):
 
 def main():
     """Main function to initialize and run the application."""
-    if not BOT_TOKEN or not STORAGE_CHANNEL_ID:
-        logger.error("BOT_TOKEN or STORAGE_CHANNEL_ID environment variables are not set. Exiting.")
-        sys.exit(1)
-
     if not initialize_mongodb():
         logger.error("Failed to connect to MongoDB, exiting.")
         sys.exit(1)
 
     app_state['bot_app'] = initialize_telegram_bot_app()
-    if app_state['bot_app'] is None:
+    if not app_state['bot_app']:
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
 
     atexit.register(close_mongodb_connection)
-
-    # Start the bot's update processing logic (including webhook setup) in a separate thread
+    
+    # Start the bot's update processing in a separate thread
     bot_thread = threading.Thread(target=run_bot_worker, daemon=True)
     bot_thread.start()
+    
+    # Set up webhook after server starts
+    set_webhook_sync()
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
     # Use Waitress, a production-ready WSGI server, to serve the Flask app
-    logger.info(f"Starting Flask application with Waitress on port {PORT}...")
+    logger.info("Starting Flask application with Waitress...")
     serve(app, host='0.0.0.0', port=PORT, threads=10)
 
 if __name__ == '__main__':
     main()
-
