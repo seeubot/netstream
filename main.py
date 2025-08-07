@@ -58,7 +58,6 @@ app_state = {
     'content_collection': None,
     'bot_app': None,
     'shutdown': False,
-    'flask_app': None
 }
 
 # Supported formats
@@ -69,7 +68,6 @@ SUPPORTED_VIDEO_FORMATS = {
 
 def get_deployment_domain():
     """Get the deployment domain from environment variables"""
-    # Try various common deployment environment variables
     domain = (
         os.getenv('WEBHOOK_URL') or
         os.getenv('KOYEB_PUBLIC_DOMAIN') or
@@ -79,15 +77,11 @@ def get_deployment_domain():
         os.getenv('VERCEL_URL') or
         os.getenv('RENDER_EXTERNAL_URL')
     )
-
     if not domain:
         logger.warning("No deployment domain found in environment variables")
         return None
-
-    # Ensure domain has https prefix
     if not domain.startswith('http'):
         domain = f"https://{domain}"
-
     return domain
 
 def is_video_file(filename):
@@ -101,7 +95,6 @@ def get_video_mime_type(filename):
     mime_type, _ = mimetypes.guess_type(filename)
     if mime_type and mime_type.startswith('video/'):
         return mime_type
-
     ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
     mime_map = {
         'mp4': 'video/mp4', 'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska',
@@ -117,7 +110,6 @@ def initialize_mongodb():
     for attempt in range(max_retries):
         try:
             logger.info(f"Connecting to MongoDB (attempt {attempt + 1}/{max_retries})")
-
             client = MongoClient(
                 MONGO_URI,
                 serverSelectionTimeoutMS=10000,
@@ -126,89 +118,31 @@ def initialize_mongodb():
                 maxPoolSize=10,
                 retryWrites=True
             )
-
-            # Test connection
             client.admin.command('ping')
-
             db = client[DB_NAME]
             files_collection = db['files']
             content_collection = db['content']
-
-            # Create indexes
             try:
                 files_collection.create_index([('user_id', 1)], background=True)
                 content_collection.create_index([('added_by', 1), ('type', 1)], background=True)
                 content_collection.create_index([('type', 1)], background=True)
             except Exception as e:
                 logger.warning(f"Index creation warning: {e}")
-
             app_state.update({
                 'mongo_client': client,
                 'db': db,
                 'files_collection': files_collection,
                 'content_collection': content_collection
             })
-
             logger.info("✅ MongoDB connected successfully!")
             return True
-
         except Exception as e:
             logger.error(f"MongoDB connection attempt {attempt + 1} failed: {e}")
             if attempt == max_retries - 1:
                 logger.error("❌ All MongoDB connection attempts failed")
                 return False
-            time.sleep(2 ** attempt)  # Exponential backoff
-
+            time.sleep(2 ** attempt)
     return False
-
-async def initialize_telegram_bot():
-    """Initialize Telegram bot application with webhook"""
-    if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN not provided")
-        return False
-
-    try:
-        # Create bot application
-        bot_app = Application.builder().token(BOT_TOKEN).build()
-
-        # Add handlers
-        bot_app.add_handler(CommandHandler("start", start_command))
-        bot_app.add_handler(CommandHandler("library", library_command))
-        bot_app.add_handler(CommandHandler("frontend", frontend_command))
-        bot_app.add_handler(CommandHandler("stats", stats_command))
-        bot_app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video_file))
-        bot_app.add_handler(CallbackQueryHandler(handle_categorization))
-        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
-
-        # Initialize the bot
-        await bot_app.initialize()
-
-        # Set webhook if URL is provided
-        webhook_url = get_deployment_domain()
-        if webhook_url:
-            webhook_full_url = f"{webhook_url.rstrip('/')}{WEBHOOK_PATH}"
-            logger.info(f"Setting webhook to: {webhook_full_url}")
-
-            try:
-                await bot_app.bot.set_webhook(
-                    url=webhook_full_url,
-                    drop_pending_updates=True,
-                    max_connections=10
-                )
-                logger.info("✅ Webhook set successfully!")
-            except Exception as e:
-                logger.error(f"Failed to set webhook: {e}")
-                return False
-        else:
-            logger.warning("⚠️ No webhook URL provided, webhook not set")
-
-        app_state['bot_app'] = bot_app
-        logger.info("✅ Telegram bot initialized successfully!")
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ Telegram bot initialization failed: {e}")
-        return False
 
 # Flask application
 app = Flask(__name__)
@@ -494,7 +428,6 @@ FRONTEND_HTML = """
             } else if (selectedPlayer === 'vlc') {
                 url = `vlc://${url}`;
             }
-
             streamButton.href = url;
         }
 
@@ -515,7 +448,6 @@ FRONTEND_HTML = """
             content.forEach(item => {
                 const card = document.createElement('div');
                 card.className = 'content-card';
-
                 const type = item.type === 'movie' ? 'Movie' : 'Series';
                 const typeIcon = item.type === 'movie' ? '🎬' : '📺';
                 const meta = item.type === 'movie'
@@ -568,16 +500,12 @@ FRONTEND_HTML = """
                 });
 
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
                 const data = await response.json();
-
                 document.getElementById('movies-count').textContent = data.movies.length;
                 document.getElementById('series-count').textContent = data.series.length;
                 document.getElementById('total-count').textContent = data.total_content;
-
                 allContent = [...data.movies, ...data.series];
                 renderContent(allContent);
-
             } catch (error) {
                 console.error('Failed to load content:', error);
                 document.getElementById('content-grid').innerHTML = `
@@ -588,17 +516,33 @@ FRONTEND_HTML = """
                 `;
             }
         }
-
-        // Event listeners
         document.getElementById('searchInput').addEventListener('input', handleSearch);
-
-        // Initial load and periodic refresh
         loadContent();
         setInterval(loadContent, 30000);
     </script>
 </body>
 </html>
 """
+
+def initialize_telegram_bot_app():
+    """Initialize Telegram bot application with handlers"""
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN not provided")
+        return None
+    try:
+        bot_app = Application.builder().token(BOT_TOKEN).build()
+        bot_app.add_handler(CommandHandler("start", start_command))
+        bot_app.add_handler(CommandHandler("library", library_command))
+        bot_app.add_handler(CommandHandler("frontend", frontend_command))
+        bot_app.add_handler(CommandHandler("stats", stats_command))
+        bot_app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video_file))
+        bot_app.add_handler(CallbackQueryHandler(handle_categorization))
+        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
+        logger.info("✅ Telegram bot initialized successfully!")
+        return bot_app
+    except Exception as e:
+        logger.error(f"❌ Telegram bot initialization failed: {e}")
+        return None
 
 # Flask Routes
 @app.route('/')
@@ -614,8 +558,6 @@ def health_check():
         'timestamp': datetime.now().isoformat(),
         'services': {}
     }
-
-    # Check MongoDB
     try:
         if app_state['mongo_client']:
             app_state['mongo_client'].admin.command('ping')
@@ -626,38 +568,27 @@ def health_check():
     except Exception as e:
         health_status['services']['mongodb'] = f'error: {str(e)[:50]}'
         health_status['status'] = 'degraded'
-
-    # Check Bot
     health_status['services']['telegram_bot'] = 'ok' if app_state['bot_app'] else 'not_initialized'
-
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
 @app.route(WEBHOOK_PATH, methods=['POST'])
-async def webhook_handler():
+def webhook_handler():
     """Handle incoming webhook from Telegram"""
     try:
         if not app_state['bot_app']:
             logger.error("Bot application not initialized")
             return '', 500
-
-        # Get update from request
         update_data = request.get_json(force=True)
-
         if not update_data:
             logger.warning("Empty webhook update received")
             return '', 400
-
-        # Create Update object
         update = Update.de_json(update_data, app_state['bot_app'].bot)
-
         if update:
-            # Process update asynchronously
-            await app_state['bot_app'].process_update(update)
+            asyncio.run(app_state['bot_app'].process_update(update))
             return '', 200
         else:
             logger.warning("Failed to parse webhook update")
             return '', 400
-
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return '', 500
@@ -673,27 +604,22 @@ def get_content_library():
                 'total_content': 0,
                 'error': 'Database not available'
             }), 503
-
         projection = {
             '_id': 0, 'title': 1, 'type': 1, 'year': 1, 'season': 1,
             'episode': 1, 'genre': 1, 'description': 1, 'stream_url': 1
         }
-
         movies = list(app_state['content_collection'].find(
             {'type': 'movie'}, projection
         ).sort('added_date', -1).limit(200))
-
         series = list(app_state['content_collection'].find(
             {'type': 'series'}, projection
         ).sort('added_date', -1).limit(200))
-
         return jsonify({
             'movies': movies,
             'series': series,
             'total_content': len(movies) + len(series),
             'timestamp': datetime.now().isoformat()
         })
-
     except Exception as e:
         logger.error(f"Error in get_content_library: {e}")
         return jsonify({
@@ -709,31 +635,24 @@ def stream_file(file_id):
     try:
         if not app_state['files_collection']:
             abort(503)
-
         file_info = app_state['files_collection'].find_one(
             {'_id': file_id},
             {'file_url': 1, 'file_size': 1, 'filename': 1}
         )
-
         if not file_info:
             abort(404)
-
         file_url = file_info['file_url']
         file_size = file_info['file_size']
         filename = file_info['filename']
         mime_type = get_video_mime_type(filename)
-
         range_header = request.environ.get('HTTP_RANGE', '').strip()
-
         if range_header:
             range_match = re.search(r'bytes=(\d+)-(\d*)', range_header)
             if range_match:
                 start = int(range_match.group(1))
                 end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
-
                 start = max(0, min(start, file_size - 1))
                 end = max(start, min(end, file_size - 1))
-
                 def generate_range():
                     try:
                         headers = {'Range': f'bytes={start}-{end}'}
@@ -744,7 +663,6 @@ def stream_file(file_id):
                                     yield chunk
                     except Exception as e:
                         logger.error(f"Range streaming error for {file_id}: {e}")
-
                 return Response(
                     generate_range(),
                     206,
@@ -757,7 +675,6 @@ def stream_file(file_id):
                         'Access-Control-Allow-Origin': '*'
                     }
                 )
-
         def generate_full():
             try:
                 with requests.get(file_url, stream=True, timeout=30) as response:
@@ -767,7 +684,6 @@ def stream_file(file_id):
                             yield chunk
             except Exception as e:
                 logger.error(f"Full streaming error for {file_id}: {e}")
-
         return Response(
             generate_full(),
             200,
@@ -779,7 +695,6 @@ def stream_file(file_id):
                 'Access-Control-Allow-Origin': '*'
             }
         )
-
     except Exception as e:
         logger.error(f"Stream error for {file_id}: {e}")
         abort(500)
@@ -790,12 +705,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         domain = get_deployment_domain()
         frontend_url = domain if domain else "https://your-app.herokuapp.com"
-
         welcome_text = f"""
 🎬 **StreamFlix - Your Personal Netflix** 🎬
-
 Welcome to your own streaming platform! Transform any video into a Netflix-style streaming experience.
-
 **✨ Features:**
 • Netflix-style interface with modern design
 • Mobile & Android TV optimized
@@ -803,18 +715,15 @@ Welcome to your own streaming platform! Transform any video into a Netflix-style
 • Movie & Series categorization
 • Search functionality
 • Permanent streaming URLs
-
 **🎯 Commands:**
 /start - Welcome message
 /library - Browse your content
 /frontend - Access web interface
 /stats - View library statistics
-
 **🚀 Get Started:**
 1. Send me any video file
 2. I'll categorize it (Movie/Series)
 3. Access your library at: {frontend_url}
-
 Ready to build your streaming empire! 🚀
 """
         await update.message.reply_text(welcome_text, parse_mode='Markdown')
@@ -822,17 +731,13 @@ Ready to build your streaming empire! 🚀
         logger.error(f"Start command error: {e}")
         await update.message.reply_text("An error occurred while starting the bot. Please try again.")
 
-
 async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display the content library from the database."""
     try:
         if not app_state['content_collection']:
             await update.message.reply_text("Database is not available. Please try again later.")
             return
-
         await update.message.reply_text("Fetching your library... Please wait.")
-
-        # Fetch a limited number of items to avoid overwhelming the chat
         movies = await asyncio.to_thread(
             list,
             app_state['content_collection'].find({'type': 'movie'}).limit(10).sort('added_date', -1)
@@ -841,11 +746,9 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             list,
             app_state['content_collection'].find({'type': 'series'}).limit(10).sort('added_date', -1)
         )
-
         if not movies and not series:
             await update.message.reply_text("Your library is empty. Send me a video file to get started!")
             return
-
         message = "🎬 **Your StreamFlix Library** 🎬\n\n"
         if movies:
             message += "__**Movies:**__\n"
@@ -855,14 +758,11 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message += "\n__**Series:**__\n"
             for s in series:
                 message += f"• **{s.get('title', 'Untitled')}** (S{s.get('season', 'N/A')}E{s.get('episode', 'N/A')})\n"
-
         message += "\nTo see more, visit the web frontend."
         await update.message.reply_text(message, parse_mode='Markdown')
-
     except Exception as e:
         logger.error(f"Library command error: {e}")
         await update.message.reply_text("An error occurred while fetching your library.")
-
 
 async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send the user a link to the web frontend."""
@@ -876,32 +776,26 @@ async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Frontend command error: {e}")
         await update.message.reply_text("An error occurred while generating the frontend link.")
 
-
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display statistics about the content library."""
     try:
         if not app_state['content_collection'] or not app_state['files_collection']:
             await update.message.reply_text("Database is not available. Please try again later.")
             return
-
         movies_count = await asyncio.to_thread(app_state['content_collection'].count_documents, {'type': 'movie'})
         series_count = await asyncio.to_thread(app_state['content_collection'].count_documents, {'type': 'series'})
         total_files_count = await asyncio.to_thread(app_state['files_collection'].count_documents, {})
-
         message = f"""
 📊 **StreamFlix Library Statistics** 📊
-
 • **Movies:** {movies_count}
 • **Series:** {series_count}
 • **Total Files:** {total_files_count}
-
 Keep uploading content to grow your library!
 """
         await update.message.reply_text(message, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"Stats command error: {e}")
         await update.message.reply_text("An error occurred while fetching statistics.")
-
 
 async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming video or document files, save to DB, and prompt for categorization."""
@@ -914,28 +808,21 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("Please send a video file or a document containing a video.")
             return
-
         if file_to_process.file_size > MAX_FILE_SIZE:
             await update.message.reply_text(
                 f"File size exceeds the {MAX_FILE_SIZE / (1024**3):.1f} GB limit."
             )
             return
-
         filename = file_to_process.file_name
         if not is_video_file(filename):
             await update.message.reply_text(
                 "This file does not appear to be a supported video format. Please upload a valid video file."
             )
             return
-
         if not STORAGE_CHANNEL_ID:
             await update.message.reply_text("Storage channel ID is not configured. Please contact the administrator.")
             return
-
         await update.message.reply_text("Uploading your file and processing it... this might take a moment.")
-
-        # Forward the file to the storage channel
-        # Using send_video to ensure it's handled as a video, or send_document if video is not available
         if update.message.video:
             storage_message = await context.bot.send_video(
                 chat_id=STORAGE_CHANNEL_ID,
@@ -948,17 +835,11 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 document=file_to_process.file_id,
                 caption=f"Stored by {update.message.from_user.username or update.message.from_user.full_name}"
             )
-
-        # Check if the file was successfully forwarded
         if not storage_message.effective_attachment:
             await update.message.reply_text("An error occurred while uploading the file to the storage channel.")
             return
-
-        # Get the new file_id from the storage channel message
         file_id_in_channel = storage_message.effective_attachment.file_id
         file_url = f"{get_deployment_domain().rstrip('/')}/stream/{file_id_in_channel}"
-
-        # Save file metadata to MongoDB using asyncio.to_thread
         file_doc = {
             '_id': file_id_in_channel,
             'original_file_id': file_to_process.file_id,
@@ -969,8 +850,6 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'uploaded_date': datetime.now()
         }
         await asyncio.to_thread(app_state['files_collection'].insert_one, file_doc)
-
-        # Create a new content entry linked to the file
         content_doc = {
             'file_id': file_id_in_channel,
             'stream_url': file_url,
@@ -978,11 +857,8 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'added_date': datetime.now(),
             'status': 'categorizing'
         }
-
         result = await asyncio.to_thread(app_state['content_collection'].insert_one, content_doc)
         content_id = str(result.inserted_id)
-
-        # Prompt for categorization with an inline keyboard
         keyboard = [
             [
                 InlineKeyboardButton("🎬 Movie", callback_data=f"categorize_movie_{content_id}"),
@@ -994,32 +870,24 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ File uploaded! Now, please categorize this content:",
             reply_markup=reply_markup
         )
-
-        # Store the content_id for the next step (metadata input)
-        context.user_data['current_content_id'] = content_id
-
+        context.user_data['current_metadata_id'] = content_id
     except Exception as e:
         logger.error(f"Handle video file error: {e}")
         await update.message.reply_text("An unexpected error occurred while processing your file.")
-
 
 async def handle_categorization(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the inline button callback for content categorization."""
     try:
         query = update.callback_query
         await query.answer()
-
         data = query.data.split('_')
         category_type = data[1]
         content_id = data[2]
-
-        # Update the content document with the chosen category
         await asyncio.to_thread(
             app_state['content_collection'].update_one,
             {'_id': content_id},
             {'$set': {'type': category_type, 'status': 'metadata_pending'}}
         )
-
         message = "✅ Content categorized! Now, please provide the metadata.\n"
         if category_type == 'movie':
             message += "Send me the **title**, **year**, **genre**, and **description** in this format:\n\n"
@@ -1027,35 +895,26 @@ async def handle_categorization(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             message += "Send me the **title**, **season**, **episode**, **genre**, and **description** in this format:\n\n"
             message += "`Title: My Awesome Series\nSeason: 1\nEpisode: 5\nGenre: Drama\nDescription: A description for this episode.`"
-
         await query.edit_message_text(message, parse_mode='Markdown')
-
-        # Store the content_id in a different way to associate the next message
         context.user_data['current_metadata_id'] = content_id
-
     except Exception as e:
         logger.error(f"Handle categorization error: {e}")
         await query.edit_message_text("An error occurred during categorization. Please try again.")
-
 
 async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text input for metadata and update the content document."""
     try:
         content_id = context.user_data.pop('current_metadata_id', None)
         if not content_id:
-            return # Ignore messages not part of the metadata flow
-
+            return
         text = update.message.text
         metadata = {}
-
-        # Use regex to parse the metadata
         title_match = re.search(r'Title: (.+)', text, re.IGNORECASE)
         year_match = re.search(r'Year: (\d{4})', text, re.IGNORECASE)
         season_match = re.search(r'Season: (\d+)', text, re.IGNORECASE)
         episode_match = re.search(r'Episode: (\d+)', text, re.IGNORECASE)
         genre_match = re.search(r'Genre: (.+)', text, re.IGNORECASE)
         desc_match = re.search(r'Description: (.+)', text, re.IGNORECASE)
-
         if title_match:
             metadata['title'] = title_match.group(1).strip()
         if year_match:
@@ -1069,30 +928,16 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
             metadata['genre'] = genres
         if desc_match:
             metadata['description'] = desc_match.group(1).strip()
-
-        # Update the content document
         await asyncio.to_thread(
             app_state['content_collection'].update_one,
             {'_id': content_id},
             {'$set': {**metadata, 'status': 'completed'}}
         )
-
         message = "✅ Metadata saved successfully! Your content is now available in your library."
         await update.message.reply_text(message)
-
     except Exception as e:
         logger.error(f"Handle metadata input error: {e}")
         await update.message.reply_text("An error occurred while saving the metadata. Please try again.")
-
-
-def handle_signal(signum, frame):
-    """Signal handler for graceful shutdown."""
-    logger.info(f"Received signal {signum}. Shutting down gracefully...")
-    app_state['shutdown'] = True
-    # Stop the Flask development server (if it's running)
-    if 'werkzeug' in sys.modules:
-        threading.Thread(target=request.environ.get('werkzeug.server.shutdown')).start()
-
 
 def close_mongodb_connection():
     """Close MongoDB connection on exit."""
@@ -1100,46 +945,34 @@ def close_mongodb_connection():
         logger.info("Closing MongoDB connection.")
         app_state['mongo_client'].close()
 
-
-def run_flask_app():
-    """Run Flask app in a separate thread for local development."""
-    app_state['flask_app'] = app
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
-
-
-async def main():
+def main():
     """Main function to initialize and run the application."""
     if not initialize_mongodb():
         logger.error("Failed to connect to MongoDB, exiting.")
         sys.exit(1)
-
-    if not await initialize_telegram_bot():
+    app_state['bot_app'] = initialize_telegram_bot_app()
+    if not app_state['bot_app']:
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
-
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
-    # Register cleanup function
+    asyncio.run(app_state['bot_app'].initialize())
+    webhook_url = get_deployment_domain()
+    if webhook_url:
+        webhook_full_url = f"{webhook_url.rstrip('/')}{WEBHOOK_PATH}"
+        try:
+            asyncio.run(app_state['bot_app'].bot.set_webhook(
+                url=webhook_full_url,
+                drop_pending_updates=True,
+                max_connections=10
+            ))
+            logger.info("✅ Webhook set successfully!")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+    else:
+        logger.warning("⚠️ No webhook URL provided, webhook not set")
     atexit.register(close_mongodb_connection)
-
-    # Run the Flask app in a separate thread
-    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
-    flask_thread.start()
-
-    logger.info("Starting Telegram bot polling loop...")
-    await app_state['bot_app'].run_webhook(listen='0.0.0.0', port=PORT, url_path=WEBHOOK_PATH)
-
+    logger.info("Starting Flask application...")
+    app.run(host='0.0.0.0', port=PORT, debug=False)
 
 if __name__ == '__main__':
-    # Wrap the main function in an asyncio event loop
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Application stopped by user.")
-    finally:
-        if app_state['mongo_client']:
-            close_mongodb_connection()
-        logger.info("Shutdown complete.")
+    main()
 
