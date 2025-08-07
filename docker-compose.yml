@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  netflix-bot:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - BOT_TOKEN=${BOT_TOKEN}
+      - STORAGE_CHANNEL_ID=${STORAGE_CHANNEL_ID}
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-netflix_bot_db}
+      - KOYEB_PUBLIC_DOMAIN=${KOYEB_PUBLIC_DOMAIN}
+      - FRONTEND_URL=${FRONTEND_URL:-https://your-frontend.vercel.app}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
