@@ -18,10 +18,6 @@ from telegram.error import TelegramError
 from flask import Flask, Response, abort, jsonify, request, render_template_string
 import requests
 
-# MongoDB imports
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure, OperationFailure
-
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -358,7 +354,7 @@ def get_content_library():
 
 @flask_app.route('/health')
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint. Responds quickly without blocking."""
     try:
         mongo_client.admin.command('ping')
         mongo_status = 'ok'
@@ -366,21 +362,9 @@ def health_check():
         mongo_status = f'error: {str(e)[:50]}'
         logger.error(f"MongoDB health check failed: {e}")
 
-    try:
-        videos_count = files_collection.estimated_document_count()
-        movies_count = content_collection.count_documents({'type': 'movie'})
-        series_count = content_collection.count_documents({'type': 'series'})
-    except Exception as e:
-        logger.error(f"Error getting counts: {e}")
-        videos_count = movies_count = series_count = 0
-
     return jsonify({
         'status': 'ok' if mongo_status == 'ok' else 'degraded',
         'mongodb_status': mongo_status,
-        'videos_stored': videos_count,
-        'movies': movies_count,
-        'series': series_count,
-        'storage_channel': STORAGE_CHANNEL_ID,
         'bot_ready': telegram_bot_app is not None
     })
 
@@ -410,24 +394,17 @@ def telegram_webhook():
 # Route to manually set webhook
 @flask_app.route('/set-webhook', methods=['POST', 'GET'])
 def manual_set_webhook():
-    """Manually set webhook endpoint"""
+    """Manually set webhook endpoint for one-time configuration"""
     try:
         domain = os.getenv('KOYEB_PUBLIC_DOMAIN')
         if not domain:
             return jsonify({'error': 'KOYEB_PUBLIC_DOMAIN not set'}), 400
 
         webhook_url = f"https://{domain}/telegram-webhook"
-
-        # Delete existing webhook
-        delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
-        delete_response = requests.post(delete_url, json={"drop_pending_updates": True}, timeout=15)
-
-        # Wait a moment
-        time.sleep(2)
-
-        # Set new webhook
         set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
-        set_response = requests.post(set_url, json={"url": webhook_url}, timeout=15)
+
+        # Set new webhook, dropping old updates
+        set_response = requests.post(set_url, json={"url": webhook_url, "drop_pending_updates": True}, timeout=15)
 
         if set_response.status_code == 200:
             result = set_response.json()
@@ -759,7 +736,7 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in library_command for user {user_id}: {e}")
         await update.message.reply_text("❌ An error occurred while fetching your library. Please try again later.")
 
-# NEW: Handler for /frontend command
+# Handler for /frontend command
 async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /frontend command"""
     message_text = f"🎮 **Frontend App**\n\n"
@@ -769,7 +746,7 @@ async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(message_text, parse_mode='Markdown', reply_markup=reply_markup)
 
-# NEW: Handler for /stats command
+# Handler for /stats command
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /stats command"""
     try:
@@ -786,73 +763,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text += f"**Series in Library:** {series_count}"
     await update.message.reply_text(message_text, parse_mode='Markdown')
 
-def initialize_mongodb():
-    """Initialize MongoDB connection and collections - kept for compatibility"""
-    return mongo_client is not None
-
-async def initialize_telegram_bot():
-    """Initialize Telegram bot - kept for compatibility"""
-    return telegram_bot_app is not None
-
-def setup_webhook_with_retry(max_retries=3):
-    """Set webhook with retry mechanism"""
-    if not telegram_bot_app or not BOT_TOKEN:
-        logger.error("❌ Cannot set webhook - bot not initialized or token missing")
-        return False
-
-    domain = os.getenv('KOYEB_PUBLIC_DOMAIN')
-    if not domain:
-        logger.error("❌ KOYEB_PUBLIC_DOMAIN not set")
-        return False
-
-    webhook_url = f"https://{domain}/telegram-webhook"
-
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"🔄 Setting webhook attempt {attempt + 1}/{max_retries}")
-
-            # Delete existing webhook first
-            delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
-            delete_response = requests.post(
-                delete_url,
-                json={"drop_pending_updates": True},
-                timeout=20
-            )
-            logger.info(f"Delete webhook response: {delete_response.status_code}")
-
-            # Wait between delete and set
-            time.sleep(3)
-
-            # Set new webhook
-            set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
-            set_response = requests.post(
-                set_url,
-                json={"url": webhook_url},
-                timeout=20
-            )
-
-            if set_response.status_code == 200:
-                result = set_response.json()
-                if result.get('ok'):
-                    logger.info(f"✅ Webhook set successfully: {webhook_url}")
-                    return True
-                else:
-                    logger.warning(f"⚠️ Webhook API returned ok=false: {result}")
-            else:
-                logger.warning(f"⚠️ Webhook HTTP error {set_response.status_code}: {set_response.text}")
-
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"⚠️ Network error on attempt {attempt + 1}: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ Unexpected error on attempt {attempt + 1}: {e}")
-
-        if attempt < max_retries - 1:
-            wait_time = (attempt + 1) * 5  # Progressive backoff
-            logger.info(f"⏳ Waiting {wait_time} seconds before retry...")
-            time.sleep(wait_time)
-
-    logger.error(f"❌ Failed to set webhook after {max_retries} attempts")
-    return False
 
 # Initialize services at module level
 logger.info("🚀 Initializing services at startup...")
@@ -887,8 +797,8 @@ if BOT_TOKEN and mongo_client:
         # Add handlers
         telegram_bot_app.add_handler(CommandHandler("start", start))
         telegram_bot_app.add_handler(CommandHandler("library", library_command))
-        telegram_bot_app.add_handler(CommandHandler("frontend", frontend_command)) # NEW
-        telegram_bot_app.add_handler(CommandHandler("stats", stats_command)) # NEW
+        telegram_bot_app.add_handler(CommandHandler("frontend", frontend_command))
+        telegram_bot_app.add_handler(CommandHandler("stats", stats_command))
         telegram_bot_app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video_file))
         telegram_bot_app.add_handler(CallbackQueryHandler(handle_categorization))
         telegram_bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
@@ -901,23 +811,6 @@ if BOT_TOKEN and mongo_client:
 else:
     logger.error("❌ Missing BOT_TOKEN or MongoDB connection failed")
     telegram_bot_app = None
-
-# Delayed webhook setup function
-def delayed_webhook_setup():
-    """Setup webhook after a delay to ensure the app is fully running"""
-    logger.info("⏳ Starting delayed webhook setup...")
-    time.sleep(10)  # Wait for the app to be fully operational
-
-    if setup_webhook_with_retry(max_retries=5):
-        logger.info("✅ Webhook setup completed successfully")
-    else:
-        logger.error("❌ Webhook setup failed after all retries")
-
-# Set webhook after app starts (in a separate thread)
-if telegram_bot_app:
-    import threading
-    webhook_thread = threading.Thread(target=delayed_webhook_setup, daemon=True)
-    webhook_thread.start()
 
 # Create the Flask app
 app = flask_app
