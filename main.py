@@ -21,6 +21,7 @@ from flask import Flask, Response, abort, jsonify, request, render_template_stri
 import requests
 from pymongo import MongoClient
 import pymongo.errors
+from waitress import serve # Import Waitress for production serving
 
 # Configure logging for production
 logging.basicConfig(
@@ -48,7 +49,6 @@ MAX_FILE_SIZE = 4000 * 1024 * 1024  # 4GB
 
 # Webhook configuration
 WEBHOOK_PATH = f'/{uuid.uuid4()}'
-# The provided public domain is now used here.
 WEBHOOK_URL = 'https://intellectual-leora-school1660440-2c2cd71f.koyeb.app'
 
 # Global state
@@ -58,7 +58,6 @@ app_state = {
     'files_collection': None,
     'content_collection': None,
     'bot_app': None,
-    'shutdown_event': threading.Event(),
 }
 
 # Supported formats
@@ -530,7 +529,6 @@ def initialize_telegram_bot_app():
         logger.error("❌ BOT_TOKEN not provided")
         return None
     try:
-        # We must use an asyncio-compatible Application to handle the bot's logic
         bot_app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
         bot_app.add_handler(CommandHandler("start", start_command))
         bot_app.add_handler(CommandHandler("library", library_command))
@@ -572,7 +570,6 @@ def health_check():
     health_status['services']['telegram_bot'] = 'ok' if app_state['bot_app'] else 'not_initialized'
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
-# New webhook endpoint for Flask
 @app.route(WEBHOOK_PATH, methods=['POST'])
 async def webhook_handler():
     """Handles incoming Telegram updates from the webhook."""
@@ -933,33 +930,21 @@ def close_mongodb_connection():
         logger.info("Closing MongoDB connection.")
         app_state['mongo_client'].close()
 
-def set_initial_webhook():
+async def set_initial_webhook():
     """
     Sets the webhook at startup. This is a one-time operation.
     """
-    async def set_webhook_async():
-        try:
-            webhook_url = f"{WEBHOOK_URL.rstrip('/')}{WEBHOOK_PATH}"
-            logger.info(f"Setting webhook to: {webhook_url}")
+    try:
+        webhook_url = f"{WEBHOOK_URL.rstrip('/')}{WEBHOOK_PATH}"
+        logger.info(f"Setting webhook to: {webhook_url}")
+        # Make sure the bot is initialized before setting the webhook
+        if app_state['bot_app']:
             await app_state['bot_app'].bot.set_webhook(url=webhook_url)
             logger.info("✅ Webhook set successfully!")
-        except Exception as e:
-            logger.error(f"Failed to set webhook: {e}")
-
-    # Use a new event loop to run the async function
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(set_webhook_async())
-    finally:
-        loop.close()
-
-def run_bot_in_thread():
-    """
-    Runs the bot's application in its own event loop within a thread.
-    This is necessary to handle asynchronous bot tasks while Flask runs synchronously.
-    """
-    asyncio.run(app_state['bot_app'].run_polling(drop_pending_updates=True))
+        else:
+            logger.error("Bot application is not initialized. Cannot set webhook.")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
 
 def main():
     """Main function to initialize and run the application."""
@@ -972,14 +957,15 @@ def main():
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
 
-    # Set the webhook at application startup
-    set_initial_webhook()
-
     atexit.register(close_mongodb_connection)
     
-    # The Flask application will be the main entry point for the server.
-    logger.info("Starting Flask application...")
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    # Run the webhook setup as a one-off task
+    asyncio.run(set_initial_webhook())
+
+    # Use Waitress, a production-ready WSGI server, to serve the Flask app
+    logger.info("Starting Flask application with Waitress...")
+    # The app.run call is replaced by serve for production environments.
+    serve(app, host='0.0.0.0', port=PORT, threads=10)
 
 if __name__ == '__main__':
     main()
