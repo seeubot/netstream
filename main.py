@@ -48,7 +48,8 @@ MAX_FILE_SIZE = 4000 * 1024 * 1024  # 4GB
 
 # Webhook configuration
 WEBHOOK_PATH = f'/{uuid.uuid4()}'
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+# The provided public domain is now used here.
+WEBHOOK_URL = 'https://intellectual-leora-school1660440-2c2cd71f.koyeb.app'
 
 # Global state
 app_state = {
@@ -67,9 +68,8 @@ SUPPORTED_VIDEO_FORMATS = {
 }
 
 def get_deployment_domain():
-    """Get the deployment domain from environment variables"""
-    domain = (
-        os.getenv('WEBHOOK_URL') or
+    """Get the deployment domain from environment variables or hardcoded value."""
+    domain = WEBHOOK_URL or (
         os.getenv('KOYEB_PUBLIC_DOMAIN') or
         os.getenv('KOYEB_DOMAIN') or
         os.getenv('PUBLIC_DOMAIN') or
@@ -933,19 +933,26 @@ def close_mongodb_connection():
         logger.info("Closing MongoDB connection.")
         app_state['mongo_client'].close()
 
-async def post_startup_tasks():
-    """Tasks to run after the application starts, like setting the webhook."""
-    try:
-        domain = get_deployment_domain()
-        if domain:
-            webhook_url = f"{domain.rstrip('/')}{WEBHOOK_PATH}"
+def set_initial_webhook():
+    """
+    Sets the webhook at startup. This is a one-time operation.
+    """
+    async def set_webhook_async():
+        try:
+            webhook_url = f"{WEBHOOK_URL.rstrip('/')}{WEBHOOK_PATH}"
             logger.info(f"Setting webhook to: {webhook_url}")
             await app_state['bot_app'].bot.set_webhook(url=webhook_url)
             logger.info("✅ Webhook set successfully!")
-        else:
-            logger.warning("No deployment domain found. Skipping webhook setup.")
-    except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+
+    # Use a new event loop to run the async function
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(set_webhook_async())
+    finally:
+        loop.close()
 
 def run_bot_in_thread():
     """
@@ -965,15 +972,12 @@ def main():
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
 
+    # Set the webhook at application startup
+    set_initial_webhook()
+
     atexit.register(close_mongodb_connection)
     
-    # Run the bot in a separate thread so Flask can run in the main thread
-    # and handle incoming webhooks.
-    bot_thread = threading.Thread(target=run_bot_in_thread)
-    bot_thread.start()
-
     # The Flask application will be the main entry point for the server.
-    # Its webhook route will forward updates to the bot thread.
     logger.info("Starting Flask application...")
     app.run(host='0.0.0.0', port=PORT, debug=False)
 
