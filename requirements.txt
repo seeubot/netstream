@@ -1,8 +1,5 @@
-python-telegram-bot==21.0.1
-Flask==3.0.3
-requests==2.32.3
-pymongo==4.7.3
-Werkzeug==3.0.3
-gunicorn==22.0.0
-python-dotenv==1.0.1
-
+python-telegram-bot
+Flask
+requests
+pymongo
+waitress
