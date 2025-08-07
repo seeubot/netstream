@@ -15,7 +15,7 @@ import time
 import atexit
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, WebhookServer
 from telegram.error import TelegramError
 from flask import Flask, Response, abort, jsonify, request, render_template_string
 import requests
@@ -571,28 +571,6 @@ def health_check():
     health_status['services']['telegram_bot'] = 'ok' if app_state['bot_app'] else 'not_initialized'
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
-@app.route(WEBHOOK_PATH, methods=['POST'])
-def webhook_handler():
-    """Handle incoming webhook from Telegram"""
-    try:
-        if not app_state['bot_app']:
-            logger.error("Bot application not initialized")
-            return '', 500
-        update_data = request.get_json(force=True)
-        if not update_data:
-            logger.warning("Empty webhook update received")
-            return '', 400
-        update = Update.de_json(update_data, app_state['bot_app'].bot)
-        if update:
-            asyncio.run(app_state['bot_app'].process_update(update))
-            return '', 200
-        else:
-            logger.warning("Failed to parse webhook update")
-            return '', 400
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return '', 500
-
 @app.route('/api/content')
 def get_content_library():
     """Get content library with error handling"""
@@ -738,14 +716,8 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Database is not available. Please try again later.")
             return
         await update.message.reply_text("Fetching your library... Please wait.")
-        movies = await asyncio.to_thread(
-            list,
-            app_state['content_collection'].find({'type': 'movie'}).limit(10).sort('added_date', -1)
-        )
-        series = await asyncio.to_thread(
-            list,
-            app_state['content_collection'].find({'type': 'series'}).limit(10).sort('added_date', -1)
-        )
+        movies = list(app_state['content_collection'].find({'type': 'movie'}).sort('added_date', -1).limit(10))
+        series = list(app_state['content_collection'].find({'type': 'series'}).sort('added_date', -1).limit(10))
         if not movies and not series:
             await update.message.reply_text("Your library is empty. Send me a video file to get started!")
             return
@@ -782,9 +754,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not app_state['content_collection'] or not app_state['files_collection']:
             await update.message.reply_text("Database is not available. Please try again later.")
             return
-        movies_count = await asyncio.to_thread(app_state['content_collection'].count_documents, {'type': 'movie'})
-        series_count = await asyncio.to_thread(app_state['content_collection'].count_documents, {'type': 'series'})
-        total_files_count = await asyncio.to_thread(app_state['files_collection'].count_documents, {})
+        movies_count = app_state['content_collection'].count_documents({'type': 'movie'})
+        series_count = app_state['content_collection'].count_documents({'type': 'series'})
+        total_files_count = app_state['files_collection'].count_documents({})
         message = f"""
 📊 **StreamFlix Library Statistics** 📊
 • **Movies:** {movies_count}
@@ -849,7 +821,7 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'user_id': update.message.from_user.id,
             'uploaded_date': datetime.now()
         }
-        await asyncio.to_thread(app_state['files_collection'].insert_one, file_doc)
+        app_state['files_collection'].insert_one(file_doc)
         content_doc = {
             'file_id': file_id_in_channel,
             'stream_url': file_url,
@@ -857,7 +829,7 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'added_date': datetime.now(),
             'status': 'categorizing'
         }
-        result = await asyncio.to_thread(app_state['content_collection'].insert_one, content_doc)
+        result = app_state['content_collection'].insert_one(content_doc)
         content_id = str(result.inserted_id)
         keyboard = [
             [
@@ -883,8 +855,7 @@ async def handle_categorization(update: Update, context: ContextTypes.DEFAULT_TY
         data = query.data.split('_')
         category_type = data[1]
         content_id = data[2]
-        await asyncio.to_thread(
-            app_state['content_collection'].update_one,
+        app_state['content_collection'].update_one(
             {'_id': content_id},
             {'$set': {'type': category_type, 'status': 'metadata_pending'}}
         )
@@ -928,8 +899,7 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
             metadata['genre'] = genres
         if desc_match:
             metadata['description'] = desc_match.group(1).strip()
-        await asyncio.to_thread(
-            app_state['content_collection'].update_one,
+        app_state['content_collection'].update_one(
             {'_id': content_id},
             {'$set': {**metadata, 'status': 'completed'}}
         )
@@ -950,28 +920,27 @@ def main():
     if not initialize_mongodb():
         logger.error("Failed to connect to MongoDB, exiting.")
         sys.exit(1)
+
     app_state['bot_app'] = initialize_telegram_bot_app()
     if not app_state['bot_app']:
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
-    asyncio.run(app_state['bot_app'].initialize())
-    webhook_url = get_deployment_domain()
-    if webhook_url:
-        webhook_full_url = f"{webhook_url.rstrip('/')}{WEBHOOK_PATH}"
-        try:
-            asyncio.run(app_state['bot_app'].bot.set_webhook(
-                url=webhook_full_url,
-                drop_pending_updates=True,
-                max_connections=10
-            ))
-            logger.info("✅ Webhook set successfully!")
-        except Exception as e:
-            logger.error(f"Failed to set webhook: {e}")
-    else:
-        logger.warning("⚠️ No webhook URL provided, webhook not set")
+
     atexit.register(close_mongodb_connection)
-    logger.info("Starting Flask application...")
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    
+    # Use the bot's run_webhook method, providing the Flask app as a WSGI app.
+    # This correctly handles the event loop and serves both the bot and your web routes.
+    logger.info("Starting Telegram bot webhook server...")
+    app_state['bot_app'].run_webhook(
+        listen='0.0.0.0',
+        port=PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=get_deployment_domain().rstrip('/') + WEBHOOK_PATH,
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        max_connections=40,
+        webhook_server=WebhookServer(app=app)
+    )
 
 if __name__ == '__main__':
     main()
