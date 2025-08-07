@@ -3,3 +3,6 @@ Flask
 requests
 pymongo
 waitress
+quart
+hypercorn
+
