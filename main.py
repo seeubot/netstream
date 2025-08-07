@@ -595,9 +595,13 @@ def webhook_handler():
 
 @app.route('/api/content')
 def get_content_library():
-    """Get content library with error handling"""
+    """
+    Get content library with error handling.
+    FIX: Corrected the check for the database collection.
+    """
     try:
-        if not app_state['content_collection']:
+        # The key fix is here: check if the collection is None, not if it's "not truthy".
+        if app_state['content_collection'] is None:
             return jsonify({
                 'movies': [],
                 'series': [],
@@ -631,9 +635,13 @@ def get_content_library():
 
 @app.route('/stream/<file_id>')
 def stream_file(file_id):
-    """Stream video files with range request support"""
+    """
+    Stream video files with range request support.
+    FIX: Corrected the check for the database collection.
+    """
     try:
-        if not app_state['files_collection']:
+        # Apply the same fix to this function for consistency.
+        if app_state['files_collection'] is None:
             abort(503)
         file_info = app_state['files_collection'].find_one(
             {'_id': file_id},
@@ -734,7 +742,7 @@ Ready to build your streaming empire! 🚀
 async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display the content library from the database."""
     try:
-        if not app_state['content_collection']:
+        if app_state['content_collection'] is None:
             await update.message.reply_text("Database is not available. Please try again later.")
             return
         await update.message.reply_text("Fetching your library... Please wait.")
@@ -773,7 +781,7 @@ async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display statistics about the content library."""
     try:
-        if not app_state['content_collection'] or not app_state['files_collection']:
+        if app_state['content_collection'] is None or app_state['files_collection'] is None:
             await update.message.reply_text("Database is not available. Please try again later.")
             return
         movies_count = app_state['content_collection'].count_documents({'type': 'movie'})
@@ -942,31 +950,47 @@ def close_mongodb_connection():
         app_state['mongo_client'].close()
 
 def set_webhook_sync():
-    """Set webhook synchronously using requests"""
-    try:
-        webhook_url = f"{WEBHOOK_URL.rstrip('/')}{WEBHOOK_PATH}"
-        logger.info(f"Setting webhook to: {webhook_url}")
-        
-        # Use requests to set the webhook synchronously
-        telegram_api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
-        response = requests.post(
-            telegram_api_url,
-            json={'url': webhook_url},
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get('ok'):
-                app_state['webhook_set'] = True
-                logger.info("✅ Webhook set successfully!")
+    """
+    Set webhook synchronously using requests with retry logic.
+    FIX: Added a robust retry mechanism with exponential backoff to handle
+    transient network errors.
+    """
+    webhook_url = f"{WEBHOOK_URL.rstrip('/')}{WEBHOOK_PATH}"
+    logger.info(f"Setting webhook to: {webhook_url}")
+
+    max_retries = 5
+    initial_delay = 2  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            telegram_api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+            response = requests.post(
+                telegram_api_url,
+                json={'url': webhook_url},
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('ok'):
+                    app_state['webhook_set'] = True
+                    logger.info("✅ Webhook set successfully!")
+                    return  # Exit on success
+                else:
+                    logger.error(f"Failed to set webhook on attempt {attempt + 1}: {result.get('description')}")
             else:
-                logger.error(f"Failed to set webhook: {result.get('description')}")
-        else:
-            logger.error(f"Failed to set webhook: HTTP {response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
+                logger.error(f"Failed to set webhook on attempt {attempt + 1}: HTTP {response.status_code}")
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Connection error on webhook setup (attempt {attempt + 1}): {e}")
+
+        # If it's not the last attempt, calculate and wait for the next backoff delay
+        if attempt < max_retries - 1:
+            delay = initial_delay * (2 ** attempt)
+            logger.info(f"Retrying in {delay} seconds...")
+            time.sleep(delay)
+
+    logger.error("❌ Failed to set webhook after multiple retries. Bot will not receive updates.")
 
 def run_bot_worker():
     """Starts the bot application's update processing loop."""
@@ -1017,3 +1041,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
