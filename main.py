@@ -12,6 +12,7 @@ import signal
 import sys
 from urllib.parse import quote
 import time
+import atexit
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -35,8 +36,9 @@ logger = logging.getLogger(__name__)
 logging.getLogger('pymongo').setLevel(logging.WARNING)
 logging.getLogger('telegram').setLevel(logging.WARNING)
 logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
-# Configuration with defaults
+# Configuration with defaults and validation
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 STORAGE_CHANNEL_ID = os.getenv('STORAGE_CHANNEL_ID')
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb+srv://food:food@food.1jskkt3.mongodb.net/?retryWrites=true&w=majority&appName=food')
@@ -51,7 +53,8 @@ app_state = {
     'files_collection': None,
     'content_collection': None,
     'bot_app': None,
-    'shutdown': False
+    'shutdown': False,
+    'flask_app': None
 }
 
 # Supported formats
@@ -92,8 +95,8 @@ def get_video_mime_type(filename):
     }
     return mime_map.get(ext, 'video/mp4')
 
-async def initialize_mongodb():
-    """Initialize MongoDB connection with retry logic"""
+def initialize_mongodb():
+    """Initialize MongoDB connection with retry logic (synchronous)"""
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -138,12 +141,12 @@ async def initialize_mongodb():
             if attempt == max_retries - 1:
                 logger.error("❌ All MongoDB connection attempts failed")
                 return False
-            await asyncio.sleep(2 ** attempt)  # Exponential backoff
+            time.sleep(2 ** attempt)  # Exponential backoff
     
     return False
 
-async def initialize_telegram_bot():
-    """Initialize Telegram bot application"""
+def initialize_telegram_bot():
+    """Initialize Telegram bot application (synchronous)"""
     if not BOT_TOKEN:
         logger.error("❌ BOT_TOKEN not provided")
         return False
@@ -716,10 +719,11 @@ def stream_file(file_id):
 # Telegram Bot Handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
-    domain = get_koyeb_domain()
-    frontend_url = f"https://{domain}" if domain else "https://your-app.koyeb.app"
-    
-    welcome_text = f"""
+    try:
+        domain = get_koyeb_domain()
+        frontend_url = f"https://{domain}" if domain else "https://your-app.koyeb.app"
+        
+        welcome_text = f"""
 🎬 **StreamFlix - Your Personal Netflix** 🎬
 
 Welcome to your own streaming platform! Transform any video into a Netflix-style streaming experience.
@@ -745,8 +749,11 @@ Welcome to your own streaming platform! Transform any video into a Netflix-style
 
 Ready to build your streaming empire! 🚀
 """
-    
-    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+        
+        await update.message.reply_text(welcome_text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Start command error: {e}")
+        await update.message.reply_text("Welcome to StreamFlix! Send me a video to get started.")
 
 async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Library command handler"""
@@ -783,10 +790,11 @@ Upload more videos to expand your collection!
 
 async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Frontend command handler"""
-    domain = get_koyeb_domain()
-    frontend_url = f"https://{domain}" if domain else "https://your-app.koyeb.app"
-    
-    frontend_text = f"""
+    try:
+        domain = get_koyeb_domain()
+        frontend_url = f"https://{domain}" if domain else "https://your-app.koyeb.app"
+        
+        frontend_text = f"""
 🌐 **StreamFlix Web Interface**
 
 Access your Netflix-style streaming platform:
@@ -801,8 +809,11 @@ Access your Netflix-style streaming platform:
 
 Enjoy your personal streaming service! 🍿
 """
-    
-    await update.message.reply_text(frontend_text, parse_mode='Markdown')
+        
+        await update.message.reply_text(frontend_text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Frontend command error: {e}")
+        await update.message.reply_text(f"Access your library at: https://your-app.koyeb.app")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Stats command handler"""
@@ -844,6 +855,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Storage Info:**
 ✅ MongoDB Connected
 🔗 Streaming URLs Active
+
+**Recent Uploads:**
+{recent_text}
 """
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
@@ -1028,7 +1042,8 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
         success_text = f"""
 ✅ **Content Added Successfully!**
 
-🎬 **{content_doc['title']}** 📂 Type: {content_type.title()}
+🎬 **{content_doc['title']}**
+📂 Type: {content_type.title()}
 🔗 Stream URL: {file_info['stream_url']}
 
 🌐 **Access your library:**
@@ -1045,32 +1060,51 @@ Ready for your next upload! 🚀
 
 def run_flask_app():
     """Start the Flask application"""
-    logger.info(f"🌐 Starting Flask server on port {PORT}")
-    app.run(
-        host='0.0.0.0',
-        port=PORT,
-        debug=False,
-        use_reloader=False
-    )
+    try:
+        logger.info(f"🌐 Starting Flask server on port {PORT}")
+        app.run(
+            host='0.0.0.0',
+            port=PORT,
+            debug=False,
+            use_reloader=False,
+            threaded=True
+        )
+    except Exception as e:
+        logger.error(f"Flask app error: {e}")
 
 def run_bot_polling():
     """Start the bot with long polling"""
-    logger.info("🤖 Starting Telegram bot with long polling...")
-    app_state['bot_app'].run_polling(poll_interval=2.0)
+    try:
+        logger.info("🤖 Starting Telegram bot with long polling...")
+        # Use asyncio.run for proper async handling
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        app_state['bot_app'].run_polling(
+            poll_interval=2.0,
+            timeout=30,
+            bootstrap_retries=3,
+            read_timeout=30,
+            write_timeout=30,
+            connect_timeout=30,
+            pool_timeout=30
+        )
+    except Exception as e:
+        logger.error(f"Bot polling error: {e}")
 
-async def initialize_application():
+def initialize_application():
     """Initialize the complete application"""
     logger.info("🚀 Starting StreamFlix application...")
     
     try:
-        if not await initialize_mongodb():
+        if not initialize_mongodb():
             logger.error("❌ Failed to initialize MongoDB")
             return False
         
-        if not await initialize_telegram_bot():
+        if not initialize_telegram_bot():
             logger.error("❌ Failed to initialize Telegram Bot")
             return False
         
+        app_state['flask_app'] = app
         logger.info("✅ Application initialized successfully!")
         return True
         
@@ -1078,21 +1112,35 @@ async def initialize_application():
         logger.error(f"❌ Application initialization failed: {e}")
         return False
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals"""
-    logger.info(f"Received signal {signum}, shutting down gracefully...")
-    app_state['shutdown'] = True
+def cleanup_resources():
+    """Clean up resources on shutdown"""
+    logger.info("🧹 Cleaning up resources...")
     
     if app_state['mongo_client']:
-        app_state['mongo_client'].close()
-        logger.info("MongoDB connection closed")
+        try:
+            app_state['mongo_client'].close()
+            logger.info("✅ MongoDB connection closed")
+        except Exception as e:
+            logger.error(f"Error closing MongoDB: {e}")
     
+    app_state['shutdown'] = True
+    logger.info("✅ Cleanup complete")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"📡 Received signal {signum}, shutting down gracefully...")
+    cleanup_resources()
     sys.exit(0)
 
+# Register cleanup function
+atexit.register(cleanup_resources)
+
 if __name__ == '__main__':
+    # Register signal handlers
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
+    # Validate required environment variables
     if not BOT_TOKEN:
         logger.error("❌ BOT_TOKEN environment variable is required")
         sys.exit(1)
@@ -1100,21 +1148,48 @@ if __name__ == '__main__':
     if not STORAGE_CHANNEL_ID:
         logger.warning("⚠️ STORAGE_CHANNEL_ID not set")
     
-    asyncio.run(initialize_application())
+    # Initialize application
+    if not initialize_application():
+        logger.error("❌ Application initialization failed")
+        sys.exit(1)
     
-    # Run Flask and the bot in separate threads
-    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
-    bot_thread = threading.Thread(target=run_bot_polling, daemon=True)
+    # Start both Flask and Bot in separate threads
+    flask_thread = threading.Thread(target=run_flask_app, daemon=True, name="FlaskThread")
+    bot_thread = threading.Thread(target=run_bot_polling, daemon=True, name="BotThread")
 
-    flask_thread.start()
-    bot_thread.start()
-
-    # Keep the main thread alive to handle signals and manage threads
     try:
+        # Start threads
+        flask_thread.start()
+        logger.info("✅ Flask thread started")
+        
+        time.sleep(2)  # Give Flask time to start
+        
+        bot_thread.start()
+        logger.info("✅ Bot thread started")
+        
+        logger.info("🎉 StreamFlix is now running!")
+        logger.info(f"🌐 Web interface: http://0.0.0.0:{PORT}")
+        logger.info("🤖 Telegram bot is active")
+        
+        # Keep main thread alive
         while not app_state['shutdown']:
             time.sleep(1)
+            
+            # Check if threads are still alive
+            if not flask_thread.is_alive():
+                logger.error("❌ Flask thread died, restarting...")
+                flask_thread = threading.Thread(target=run_flask_app, daemon=True, name="FlaskThread")
+                flask_thread.start()
+                
+            if not bot_thread.is_alive():
+                logger.error("❌ Bot thread died, restarting...")
+                bot_thread = threading.Thread(target=run_bot_polling, daemon=True, name="BotThread")
+                bot_thread.start()
+                
     except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received, shutting down...")
+        logger.info("⌨️ Keyboard interrupt received")
+    except Exception as e:
+        logger.error(f"❌ Main thread error: {e}")
     finally:
-        logger.info("Main thread exiting.")
-
+        cleanup_resources()
+        logger.info("👋 StreamFlix shutdown complete")
