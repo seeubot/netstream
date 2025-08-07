@@ -14,6 +14,8 @@ from urllib.parse import quote
 import time
 import atexit
 import requests
+import queue
+from functools import partial
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -58,7 +60,9 @@ app_state = {
     'files_collection': None,
     'content_collection': None,
     'bot_app': None,
-    'webhook_set': False
+    'webhook_set': False,
+    'shutdown_event': threading.Event(),
+    'update_queue': None
 }
 
 # Supported formats
@@ -530,7 +534,8 @@ def initialize_telegram_bot_app():
         logger.error("❌ BOT_TOKEN not provided")
         return None
     try:
-        bot_app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
+        app_state['update_queue'] = queue.Queue()
+        bot_app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
         bot_app.add_handler(CommandHandler("start", start_command))
         bot_app.add_handler(CommandHandler("library", library_command))
         bot_app.add_handler(CommandHandler("frontend", frontend_command))
@@ -577,18 +582,12 @@ def health_check():
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook_handler():
     """Handles incoming Telegram updates from the webhook."""
+    if not app_state['bot_app']:
+        return jsonify({'error': 'Bot application not initialized'}), 503
     try:
         update = Update.de_json(request.get_json(force=True), app_state['bot_app'].bot)
-        # Process the update in a separate thread to not block Flask
-        def process_update():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(app_state['bot_app'].process_update(update))
-            finally:
-                loop.close()
-        
-        threading.Thread(target=process_update, daemon=True).start()
+        # Put the update on the queue for the worker thread to process
+        app_state['update_queue'].put(update)
         return 'OK'
     except Exception as e:
         logger.error(f"Error processing webhook update: {e}")
@@ -969,13 +968,24 @@ def set_webhook_sync():
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
 
-def setup_webhook_delayed():
-    """Set up webhook after a short delay to ensure server is ready"""
-    def delayed_setup():
-        time.sleep(5)  # Wait 5 seconds for server to be fully ready
-        set_webhook_sync()
-    
-    threading.Thread(target=delayed_setup, daemon=True).start()
+def run_bot_worker():
+    """Starts the bot application's update processing loop."""
+    try:
+        if app_state['bot_app']:
+            # The run_until_shutdown method processes updates from the update_queue
+            # and shuts down when the event is set.
+            app_state['bot_app'].run_until_shutdown(
+                update_queue=app_state['update_queue'],
+                stop_event=app_state['shutdown_event']
+            )
+    except Exception as e:
+        logger.error(f"Bot worker thread failed: {e}")
+
+def shutdown_handler(signum, frame):
+    """Graceful shutdown handler for signals."""
+    logger.info(f"Signal {signum} received, initiating shutdown.")
+    app_state['shutdown_event'].set()
+    sys.exit(0)
 
 def main():
     """Main function to initialize and run the application."""
@@ -990,8 +1000,16 @@ def main():
 
     atexit.register(close_mongodb_connection)
     
+    # Start the bot's update processing in a separate thread
+    bot_thread = threading.Thread(target=run_bot_worker, daemon=True)
+    bot_thread.start()
+    
     # Set up webhook after server starts
-    setup_webhook_delayed()
+    set_webhook_sync()
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
 
     # Use Waitress, a production-ready WSGI server, to serve the Flask app
     logger.info("Starting Flask application with Waitress...")
@@ -999,3 +1017,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
