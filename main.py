@@ -93,7 +93,7 @@ def get_video_mime_type(filename):
     }
     return mime_map.get(ext, 'video/mp4')
 
-def initialize_mongodb():
+async def initialize_mongodb():
     """Initialize MongoDB connection with retry logic"""
     max_retries = 3
     for attempt in range(max_retries):
@@ -771,7 +771,7 @@ def telegram_webhook():
         return "Error", 500
 
 @flask_app.route('/setup-webhook', methods=['POST', 'GET'])
-def manual_webhook_setup():
+async def manual_webhook_setup():
     """Manual webhook setup endpoint"""
     try:
         success = await setup_webhook()
@@ -803,10 +803,8 @@ Welcome to your own streaming platform! Transform any video into a Netflix-style
 • Search functionality
 • Permanent streaming URLs
 
-# MISSING CODE - This should continue from where your code stopped
-
 **🎯 Commands:**
-/upload - Upload and categorize videos
+/start - Welcome message
 /library - Browse your content
 /frontend - Access web interface
 /stats - View library statistics
@@ -913,9 +911,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🎬 Movies: {movie_count}
 📺 Series: {series_count}
 📈 Total: {movie_count + series_count}
-
-**Recent Uploads:**
-{recent_text}
 
 **Storage Info:**
 ✅ MongoDB Connected
@@ -1121,8 +1116,7 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
         success_text = f"""
 ✅ **Content Added Successfully!**
 
-🎬 **{content_doc['title']}** 
-📂 Type: {content_type.title()}
+🎬 **{content_doc['title']}** 📂 Type: {content_type.title()}
 🔗 Stream URL: {file_info['stream_url']}
 
 🌐 **Access your library:**
@@ -1144,7 +1138,7 @@ async def initialize_application():
     
     try:
         # Initialize MongoDB
-        if not initialize_mongodb():
+        if not await initialize_mongodb():
             logger.error("❌ Failed to initialize MongoDB")
             return False
         
@@ -1209,3 +1203,4 @@ if __name__ == '__main__':
         threaded=True,
         use_reloader=False
     )
+
