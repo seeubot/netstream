@@ -833,8 +833,14 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Fetching your library... Please wait.")
 
         # Fetch a limited number of items to avoid overwhelming the chat
-        movies = list(app_state['content_collection'].find({'type': 'movie'}).limit(10).sort('added_date', -1))
-        series = list(app_state['content_collection'].find({'type': 'series'}).limit(10).sort('added_date', -1))
+        movies = await asyncio.to_thread(
+            list,
+            app_state['content_collection'].find({'type': 'movie'}).limit(10).sort('added_date', -1)
+        )
+        series = await asyncio.to_thread(
+            list,
+            app_state['content_collection'].find({'type': 'series'}).limit(10).sort('added_date', -1)
+        )
 
         if not movies and not series:
             await update.message.reply_text("Your library is empty. Send me a video file to get started!")
@@ -878,9 +884,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Database is not available. Please try again later.")
             return
 
-        movies_count = await app_state['content_collection'].count_documents({'type': 'movie'})
-        series_count = await app_state['content_collection'].count_documents({'type': 'series'})
-        total_files_count = await app_state['files_collection'].count_documents({})
+        movies_count = await asyncio.to_thread(app_state['content_collection'].count_documents, {'type': 'movie'})
+        series_count = await asyncio.to_thread(app_state['content_collection'].count_documents, {'type': 'series'})
+        total_files_count = await asyncio.to_thread(app_state['files_collection'].count_documents, {})
 
         message = f"""
 📊 **StreamFlix Library Statistics** 📊
@@ -942,7 +948,7 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 document=file_to_process.file_id,
                 caption=f"Stored by {update.message.from_user.username or update.message.from_user.full_name}"
             )
-        
+
         # Check if the file was successfully forwarded
         if not storage_message.effective_attachment:
             await update.message.reply_text("An error occurred while uploading the file to the storage channel.")
@@ -951,8 +957,8 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get the new file_id from the storage channel message
         file_id_in_channel = storage_message.effective_attachment.file_id
         file_url = f"{get_deployment_domain().rstrip('/')}/stream/{file_id_in_channel}"
-        
-        # Save file metadata to MongoDB
+
+        # Save file metadata to MongoDB using asyncio.to_thread
         file_doc = {
             '_id': file_id_in_channel,
             'original_file_id': file_to_process.file_id,
@@ -962,8 +968,8 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'user_id': update.message.from_user.id,
             'uploaded_date': datetime.now()
         }
-        await app_state['files_collection'].insert_one(file_doc)
-        
+        await asyncio.to_thread(app_state['files_collection'].insert_one, file_doc)
+
         # Create a new content entry linked to the file
         content_doc = {
             'file_id': file_id_in_channel,
@@ -972,8 +978,8 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'added_date': datetime.now(),
             'status': 'categorizing'
         }
-        
-        result = await app_state['content_collection'].insert_one(content_doc)
+
+        result = await asyncio.to_thread(app_state['content_collection'].insert_one, content_doc)
         content_id = str(result.inserted_id)
 
         # Prompt for categorization with an inline keyboard
@@ -988,7 +994,7 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ File uploaded! Now, please categorize this content:",
             reply_markup=reply_markup
         )
-        
+
         # Store the content_id for the next step (metadata input)
         context.user_data['current_content_id'] = content_id
 
@@ -1008,7 +1014,8 @@ async def handle_categorization(update: Update, context: ContextTypes.DEFAULT_TY
         content_id = data[2]
 
         # Update the content document with the chosen category
-        await app_state['content_collection'].update_one(
+        await asyncio.to_thread(
+            app_state['content_collection'].update_one,
             {'_id': content_id},
             {'$set': {'type': category_type, 'status': 'metadata_pending'}}
         )
@@ -1020,9 +1027,9 @@ async def handle_categorization(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             message += "Send me the **title**, **season**, **episode**, **genre**, and **description** in this format:\n\n"
             message += "`Title: My Awesome Series\nSeason: 1\nEpisode: 5\nGenre: Drama\nDescription: A description for this episode.`"
-        
+
         await query.edit_message_text(message, parse_mode='Markdown')
-        
+
         # Store the content_id in a different way to associate the next message
         context.user_data['current_metadata_id'] = content_id
 
@@ -1064,7 +1071,8 @@ async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TY
             metadata['description'] = desc_match.group(1).strip()
 
         # Update the content document
-        await app_state['content_collection'].update_one(
+        await asyncio.to_thread(
+            app_state['content_collection'].update_one,
             {'_id': content_id},
             {'$set': {**metadata, 'status': 'completed'}}
         )
@@ -1104,7 +1112,7 @@ async def main():
     if not initialize_mongodb():
         logger.error("Failed to connect to MongoDB, exiting.")
         sys.exit(1)
-        
+
     if not await initialize_telegram_bot():
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
