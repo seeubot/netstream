@@ -20,6 +20,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.error import TelegramError
 from pymongo import MongoClient
 import pymongo.errors
+import httpx
 
 # Configure logging for production
 logging.basicConfig(
@@ -647,7 +648,7 @@ async def stream_file(file_id):
                 async def generate_range():
                     try:
                         headers = {'Range': f'bytes={start}-{end}'}
-                        async with app.http.get(file_url, headers=headers) as response:
+                        async with app.http.stream("GET", file_url, headers=headers) as response:
                             response.raise_for_status()
                             async for chunk in response.aiter_bytes():
                                 yield chunk
@@ -667,7 +668,7 @@ async def stream_file(file_id):
                 )
         async def generate_full():
             try:
-                async with app.http.get(file_url) as response:
+                async with app.http.stream("GET", file_url) as response:
                     response.raise_for_status()
                     async for chunk in response.aiter_bytes():
                         yield chunk
@@ -996,6 +997,12 @@ async def main():
     if not app_state['bot_app']:
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
+    
+    # ❌ FIX: Explicitly initialize the Application instance
+    await app_state['bot_app'].initialize()
+
+    # The Quart app needs an httpx client to handle async streaming
+    app.http = httpx.AsyncClient()
     
     # We must set the webhook before starting the server
     # The set_webhook_sync() function uses requests, which is a sync library
