@@ -18,6 +18,9 @@ from telegram.error import TelegramError
 from flask import Flask, Response, abort, jsonify, request, render_template_string
 import requests
 
+# Import MongoClient from pymongo
+from pymongo import MongoClient
+
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -769,6 +772,7 @@ logger.info("🚀 Initializing services at startup...")
 
 # Initialize MongoDB
 try:
+    # Use MongoClient from pymongo
     mongo_client = MongoClient(MONGO_URI)
     db = mongo_client[DB_NAME]
     files_collection = db['files']
