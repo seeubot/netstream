@@ -959,8 +959,10 @@ def main():
 
     atexit.register(close_mongodb_connection)
     
-    # Run the webhook setup as a one-off task
-    asyncio.run(set_initial_webhook())
+    # We'll run the webhook setup in a separate thread to not block the main process.
+    # The application will start serving immediately, and the webhook will be
+    # configured in the background.
+    threading.Thread(target=lambda: asyncio.run(set_initial_webhook()), daemon=True).start()
 
     # Use Waitress, a production-ready WSGI server, to serve the Flask app
     logger.info("Starting Flask application with Waitress...")
