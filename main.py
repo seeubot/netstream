@@ -52,7 +52,7 @@ SUPPORTED_VIDEO_FORMATS = {
     'mpg', 'mpeg', 'ogv', '3gp', 'rm', 'rmvb', 'asf', 'divx'
 }
 
-# Simple HTML template for frontend
+# Simple HTML template for frontend - UPDATED
 SIMPLE_FRONTEND = """
 <!DOCTYPE html>
 <html lang="en">
@@ -64,14 +64,18 @@ SIMPLE_FRONTEND = """
         body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #141414; color: white; }
         .container { max-width: 1200px; margin: 0 auto; }
         h1 { color: #e50914; text-align: center; }
+        .stats { text-align: center; margin-bottom: 30px; }
+        .stats span { margin: 0 20px; color: #999; }
+        .search-bar { display: flex; justify-content: center; margin-bottom: 30px; }
+        .search-bar input { width: 100%; max-width: 600px; padding: 10px; border: 1px solid #333; border-radius: 4px; background: #333; color: white; }
         .content-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; margin-top: 30px; }
         .content-item { background: #222; padding: 20px; border-radius: 8px; }
         .content-item h3 { color: #fff; margin: 0 0 10px 0; }
         .content-item p { color: #999; margin: 5px 0; }
-        .stream-btn { background: #e50914; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-block; }
-        .stream-btn:hover { background: #f40612; }
-        .stats { text-align: center; margin-bottom: 30px; }
-        .stats span { margin: 0 20px; color: #999; }
+        .stream-controls { display: flex; gap: 10px; align-items: center; margin-top: 15px; }
+        .stream-btn, .player-select { background: #e50914; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-block; }
+        .stream-btn:hover, .player-select:hover { background: #f40612; }
+        .player-select { background: #333; color: white; padding: 10px; border: 1px solid #555; border-radius: 4px; }
         .loading { text-align: center; padding: 50px; }
     </style>
 </head>
@@ -83,61 +87,109 @@ SIMPLE_FRONTEND = """
             <span id="series-count">Series: 0</span>
             <span id="total-count">Total: 0</span>
         </div>
+        <div class="search-bar">
+            <input type="text" id="searchInput" placeholder="Search movies or series...">
+        </div>
         <div id="content-grid" class="content-grid">
             <div class="loading">Loading content...</div>
         </div>
     </div>
 
     <script>
+        let allContent = [];
+
+        function renderContent(filteredContent) {
+            const contentGrid = document.getElementById('content-grid');
+            contentGrid.innerHTML = '';
+
+            if (filteredContent.length === 0) {
+                contentGrid.innerHTML = '<div class="loading">No matching content found.</div>';
+                return;
+            }
+
+            filteredContent.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'content-item';
+
+                const type = item.type === 'movie' ? '🎬' : '📺';
+                const extra = item.type === 'movie' ? `(${item.year || 'N/A'})` : `S${item.season}E${item.episode}`;
+                const streamUrl = item.stream_url;
+                const encodedUrl = encodeURIComponent(streamUrl);
+
+                div.innerHTML = `
+                    <h3>${type} ${item.title} ${extra}</h3>
+                    <p>Genre: ${Array.isArray(item.genre) ? item.genre.join(', ') : item.genre || 'N/A'}</p>
+                    <p>${item.description || 'No description available'}</p>
+                    <div class="stream-controls">
+                        <select class="player-select" onchange="updatePlayerLink(this, '${encodedUrl}')">
+                            <option value="default">Open in Browser</option>
+                            <option value="mxplayer">MX Player</option>
+                            <option value="vlc">VLC Player</option>
+                        </select>
+                        <a href="${streamUrl}" class="stream-btn" target="_blank">▶ Stream</a>
+                    </div>
+                `;
+                contentGrid.appendChild(div);
+            });
+        }
+        
+        function updatePlayerLink(selectElement, encodedUrl) {
+            const selectedPlayer = selectElement.value;
+            const parentDiv = selectElement.closest('.stream-controls');
+            const streamButton = parentDiv.querySelector('.stream-btn');
+
+            let url = decodeURIComponent(encodedUrl);
+
+            if (selectedPlayer === 'mxplayer') {
+                // MX Player intent URL
+                url = `intent:${url}#Intent;package=com.mxtech.videoplayer.ad;end;`;
+            } else if (selectedPlayer === 'vlc') {
+                // VLC intent URL
+                url = `vlc://${url}`;
+            }
+            
+            streamButton.href = url;
+        }
+
         async function loadContent() {
             try {
                 const response = await fetch('/api/content', {
                     timeout: 10000,
-                    headers: {
-                        'Cache-Control': 'no-cache'
-                    }
+                    headers: { 'Cache-Control': 'no-cache' }
                 });
-
                 if (!response.ok) throw new Error('Network response was not ok');
-
                 const data = await response.json();
 
                 document.getElementById('movies-count').textContent = `Movies: ${data.movies.length}`;
                 document.getElementById('series-count').textContent = `Series: ${data.series.length}`;
                 document.getElementById('total-count').textContent = `Total: ${data.total_content}`;
-
-                const contentGrid = document.getElementById('content-grid');
-                contentGrid.innerHTML = '';
-
-                [...data.movies, ...data.series].forEach(item => {
-                    const div = document.createElement('div');
-                    div.className = 'content-item';
-
-                    const type = item.type === 'movie' ? '🎬' : '📺';
-                    const extra = item.type === 'movie' ? `(${item.year || 'N/A'})` : `S${item.season}E${item.episode}`;
-
-                    div.innerHTML = `
-                        <h3>${type} ${item.title} ${extra}</h3>
-                        <p>Genre: ${Array.isArray(item.genre) ? item.genre.join(', ') : item.genre || 'N/A'}</p>
-                        <p>${item.description || 'No description available'}</p>
-                        <a href="${item.stream_url}" class="stream-btn" target="_blank">▶ Stream</a>
-                    `;
-                    contentGrid.appendChild(div);
-                });
-
+                
+                allContent = [...data.movies, ...data.series];
+                renderContent(allContent);
+                
                 if (data.total_content === 0) {
-                    contentGrid.innerHTML = '<div class="loading">No content available yet. Upload videos via the Telegram bot!</div>';
+                    document.getElementById('content-grid').innerHTML = '<div class="loading">No content available yet. Upload videos via the Telegram bot!</div>';
                 }
             } catch (error) {
                 console.error('Error loading content:', error);
                 document.getElementById('content-grid').innerHTML = '<div class="loading">Error loading content. Please try again later.</div>';
             }
         }
+        
+        function handleSearch(event) {
+            const searchTerm = event.target.value.toLowerCase();
+            const filteredContent = allContent.filter(item => {
+                const titleMatch = item.title.toLowerCase().includes(searchTerm);
+                const genreMatch = (item.genre || []).some(g => g.toLowerCase().includes(searchTerm));
+                const descriptionMatch = (item.description || '').toLowerCase().includes(searchTerm);
+                return titleMatch || genreMatch || descriptionMatch;
+            });
+            renderContent(filteredContent);
+        }
 
-        // Load content on page load
+        document.getElementById('searchInput').addEventListener('input', handleSearch);
+
         loadContent();
-
-        // Refresh every 30 seconds
         setInterval(loadContent, 30000);
     </script>
 </body>
@@ -707,6 +759,33 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in library_command for user {user_id}: {e}")
         await update.message.reply_text("❌ An error occurred while fetching your library. Please try again later.")
 
+# NEW: Handler for /frontend command
+async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for the /frontend command"""
+    message_text = f"🎮 **Frontend App**\n\n"
+    message_text += f"Access your personal streaming library here:\n"
+    message_text += f"🔗 {FRONTEND_URL}"
+    keyboard = [[InlineKeyboardButton("🚀 Open Frontend", url=FRONTEND_URL)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(message_text, parse_mode='Markdown', reply_markup=reply_markup)
+
+# NEW: Handler for /stats command
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for the /stats command"""
+    try:
+        videos_count = files_collection.estimated_document_count()
+        movies_count = content_collection.count_documents({'type': 'movie'})
+        series_count = content_collection.count_documents({'type': 'series'})
+    except Exception as e:
+        logger.error(f"Error getting counts for /stats command: {e}")
+        videos_count = movies_count = series_count = "N/A"
+
+    message_text = f"📊 **Bot Statistics**\n\n"
+    message_text += f"**Total Videos Stored:** {videos_count}\n"
+    message_text += f"**Movies in Library:** {movies_count}\n"
+    message_text += f"**Series in Library:** {series_count}"
+    await update.message.reply_text(message_text, parse_mode='Markdown')
+
 def initialize_mongodb():
     """Initialize MongoDB connection and collections - kept for compatibility"""
     return mongo_client is not None
@@ -808,8 +887,8 @@ if BOT_TOKEN and mongo_client:
         # Add handlers
         telegram_bot_app.add_handler(CommandHandler("start", start))
         telegram_bot_app.add_handler(CommandHandler("library", library_command))
-        telegram_bot_app.add_handler(CommandHandler("frontend", frontend_command))
-        telegram_bot_app.add_handler(CommandHandler("stats", stats_command))
+        telegram_bot_app.add_handler(CommandHandler("frontend", frontend_command)) # NEW
+        telegram_bot_app.add_handler(CommandHandler("stats", stats_command)) # NEW
         telegram_bot_app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video_file))
         telegram_bot_app.add_handler(CallbackQueryHandler(handle_categorization))
         telegram_bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
