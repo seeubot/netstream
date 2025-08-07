@@ -1,28 +1,33 @@
-# Use an official Python runtime as a parent image
-# Changed from buster to bullseye for active repositories
-FROM python:3.10-slim-bullseye
+# Use Python 3.11 for better compatibility
+FROM python:3.11-slim
 
-# Install ffmpeg (which includes ffprobe) and other necessary build tools
-# We use apt-get for Debian-based images
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    --no-install-recommends && \
-    rm -rf /var/lib/apt/lists/*
-
-# Set the working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Copy the current directory contents into the container at /app
-COPY . /app
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install any needed Python packages specified in requirements.txt
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose the port Flask will run on
-EXPOSE 5000
+# Copy application code
+COPY main.py .
 
-# Run the application using Gunicorn
-# Assuming your main script is named 'main.py' and your Flask app instance is 'flask_app'
-# IMPORTANT: Replace 'main' with the actual name of your Python script file (without .py extension)
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "main:flask_app"]
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
+USER app
 
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Start the application
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "1", "--timeout", "120", "--preload", "main:app"]
