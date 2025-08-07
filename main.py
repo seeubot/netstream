@@ -7,23 +7,19 @@ import re
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional
-import threading
-import signal
+import time
+import requests
 import sys
 from urllib.parse import quote
-import time
-import atexit
-import requests
-import queue
-from functools import partial
+from hypercorn.asyncio import serve
+from hypercorn.config import Config as HypercornConfig
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from quart import Quart, request, jsonify, Response, render_template_string, abort
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from telegram.error import TelegramError
-from flask import Flask, Response, abort, jsonify, request, render_template_string
 from pymongo import MongoClient
 import pymongo.errors
-from waitress import serve
 
 # Configure logging for production
 logging.basicConfig(
@@ -39,7 +35,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger('pymongo').setLevel(logging.WARNING)
 logging.getLogger('telegram').setLevel(logging.WARNING)
 logging.getLogger('httpx').setLevel(logging.WARNING)
-logging.getLogger('werkzeug').setLevel(logging.WARNING)
+logging.getLogger('quart.serving').setLevel(logging.WARNING)
 
 # Configuration with defaults and validation
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -60,8 +56,6 @@ app_state = {
     'content_collection': None,
     'bot_app': None,
     'webhook_set': False,
-    'shutdown_event': threading.Event(),
-    'update_queue': None,
     'webhook_url': None
 }
 
@@ -150,12 +144,8 @@ def initialize_mongodb():
             time.sleep(2 ** attempt)
     return False
 
-# Flask application
-app = Flask(__name__)
-app.config.update({
-    'JSON_SORT_KEYS': False,
-    'JSONIFY_PRETTYPRINT_REGULAR': False
-})
+# Quart application
+app = Quart(__name__)
 
 # Modern Netflix-style frontend
 FRONTEND_HTML = """
@@ -530,14 +520,14 @@ FRONTEND_HTML = """
 </html>
 """
 
-# Flask Routes
+# Quart Routes
 @app.route('/')
-def serve_frontend():
+async def serve_frontend():
     """Serve the main frontend"""
     return render_template_string(FRONTEND_HTML)
 
 @app.route('/health')
-def health_check():
+async def health_check():
     """Comprehensive health check"""
     health_status = {
         'status': 'ok',
@@ -561,7 +551,7 @@ def health_check():
     return jsonify(health_status), 200 if health_status['status'] == 'ok' else 503
 
 @app.route('/check-webhook')
-def check_webhook_url():
+async def check_webhook_url():
     """Returns the webhook URL being used by the server."""
     if not app_state['webhook_url']:
         return jsonify({
@@ -574,21 +564,22 @@ def check_webhook_url():
     })
 
 @app.route(WEBHOOK_PATH, methods=['POST'])
-def webhook_handler():
+async def webhook_handler():
     """Handles incoming Telegram updates from the webhook."""
     if not app_state['bot_app']:
         return jsonify({'error': 'Bot application not initialized'}), 503
     try:
-        update = Update.de_json(request.get_json(force=True), app_state['bot_app'].bot)
-        # Put the update on the queue for the worker thread to process
-        app_state['update_queue'].put(update)
-        return 'OK'
+        # Use awaitable request.get_json to avoid blocking
+        update = Update.de_json(await request.get_json(), app_state['bot_app'].bot)
+        # Process the update directly with the application instance
+        await app_state['bot_app'].process_update(update)
+        return jsonify({'status': 'ok'})
     except Exception as e:
         logger.error(f"Error processing webhook update: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/content')
-def get_content_library():
+async def get_content_library():
     """
     Get content library with error handling.
     """
@@ -604,6 +595,8 @@ def get_content_library():
             '_id': 0, 'title': 1, 'type': 1, 'year': 1, 'season': 1,
             'episode': 1, 'genre': 1, 'description': 1, 'stream_url': 1
         }
+        # Use asyncio-friendly find, requires async mongo driver in production
+        # For this example, we assume synchronous find is fine since it's a small app
         movies = list(app_state['content_collection'].find(
             {'type': 'movie'}, projection
         ).sort('added_date', -1).limit(200))
@@ -626,7 +619,7 @@ def get_content_library():
         }), 500
 
 @app.route('/stream/<file_id>')
-def stream_file(file_id):
+async def stream_file(file_id):
     """
     Stream video files with range request support.
     """
@@ -643,7 +636,7 @@ def stream_file(file_id):
         file_size = file_info['file_size']
         filename = file_info['filename']
         mime_type = get_video_mime_type(filename)
-        range_header = request.environ.get('HTTP_RANGE', '').strip()
+        range_header = request.headers.get('Range', '').strip()
         if range_header:
             range_match = re.search(r'bytes=(\d+)-(\d*)', range_header)
             if range_match:
@@ -651,20 +644,19 @@ def stream_file(file_id):
                 end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
                 start = max(0, min(start, file_size - 1))
                 end = max(start, min(end, file_size - 1))
-                def generate_range():
+                async def generate_range():
                     try:
                         headers = {'Range': f'bytes={start}-{end}'}
-                        with requests.get(file_url, headers=headers, stream=True, timeout=30) as response:
+                        async with app.http.get(file_url, headers=headers) as response:
                             response.raise_for_status()
-                            for chunk in response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    yield chunk
+                            async for chunk in response.aiter_bytes():
+                                yield chunk
                     except Exception as e:
                         logger.error(f"Range streaming error for {file_id}: {e}")
                 return Response(
                     generate_range(),
-                    206,
-                    {
+                    status=206,
+                    headers={
                         'Content-Type': mime_type,
                         'Accept-Ranges': 'bytes',
                         'Content-Range': f'bytes {start}-{end}/{file_size}',
@@ -673,19 +665,18 @@ def stream_file(file_id):
                         'Access-Control-Allow-Origin': '*'
                     }
                 )
-        def generate_full():
+        async def generate_full():
             try:
-                with requests.get(file_url, stream=True, timeout=30) as response:
+                async with app.http.get(file_url) as response:
                     response.raise_for_status()
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            yield chunk
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
             except Exception as e:
                 logger.error(f"Full streaming error for {file_id}: {e}")
         return Response(
             generate_full(),
-            200,
-            {
+            status=200,
+            headers={
                 'Content-Type': mime_type,
                 'Accept-Ranges': 'bytes',
                 'Content-Length': str(file_size),
@@ -698,7 +689,7 @@ def stream_file(file_id):
         abort(500)
 
 # Telegram Bot Handlers
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_command(update, context):
     """Start command handler"""
     try:
         domain = get_deployment_domain()
@@ -729,7 +720,7 @@ Ready to build your streaming empire! 🚀
         logger.error(f"Start command error: {e}")
         await update.message.reply_text("An error occurred while starting the bot. Please try again.")
 
-async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def library_command(update, context):
     """Display the content library from the database."""
     try:
         if app_state['content_collection'] is None:
@@ -756,7 +747,7 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Library command error: {e}")
         await update.message.reply_text("An error occurred while fetching your library.")
 
-async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def frontend_command(update, context):
     """Send the user a link to the web frontend."""
     try:
         domain = get_deployment_domain()
@@ -768,7 +759,7 @@ async def frontend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Frontend command error: {e}")
         await update.message.reply_text("An error occurred while generating the frontend link.")
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(update, context):
     """Display statistics about the content library."""
     try:
         if app_state['content_collection'] is None or app_state['files_collection'] is None:
@@ -789,7 +780,7 @@ Keep uploading content to grow your library!
         logger.error(f"Stats command error: {e}")
         await update.message.reply_text("An error occurred while fetching statistics.")
 
-async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_video_file(update, context):
     """Handle incoming video or document files, save to DB, and prompt for categorization."""
     try:
         file_to_process = None
@@ -871,7 +862,7 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Handle video file error: {e}")
         await update.message.reply_text("An unexpected error occurred while processing your file.")
 
-async def handle_categorization(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_categorization(update, context):
     """Handle the inline button callback for content categorization."""
     try:
         query = update.callback_query
@@ -896,7 +887,7 @@ async def handle_categorization(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Handle categorization error: {e}")
         await query.edit_message_text("An error occurred during categorization. Please try again.")
 
-async def handle_metadata_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_metadata_input(update, context):
     """Handle text input for metadata and update the content document."""
     try:
         content_id = context.user_data.pop('current_metadata_id', None)
@@ -939,8 +930,7 @@ def initialize_telegram_bot_app():
         logger.error("❌ BOT_TOKEN not provided")
         return None
     try:
-        app_state['update_queue'] = queue.Queue()
-        bot_app = Application.builder().token(BOT_TOKEN).concurrent_updates(False).build()
+        bot_app = Application.builder().token(BOT_TOKEN).build()
         bot_app.add_handler(CommandHandler("start", start_command))
         bot_app.add_handler(CommandHandler("library", library_command))
         bot_app.add_handler(CommandHandler("frontend", frontend_command))
@@ -953,12 +943,6 @@ def initialize_telegram_bot_app():
     except Exception as e:
         logger.error(f"❌ Telegram bot initialization failed: {e}")
         return None
-
-def close_mongodb_connection():
-    """Close MongoDB connection on exit."""
-    if app_state['mongo_client']:
-        logger.info("Closing MongoDB connection.")
-        app_state['mongo_client'].close()
 
 def set_webhook_sync():
     """
@@ -984,7 +968,6 @@ def set_webhook_sync():
                 json={'url': webhook_url},
                 timeout=30
             )
-
             if response.status_code == 200:
                 result = response.json()
                 if result.get('ok'):
@@ -995,36 +978,16 @@ def set_webhook_sync():
                     logger.error(f"Failed to set webhook on attempt {attempt + 1}: {result.get('description')}")
             else:
                 logger.error(f"Failed to set webhook on attempt {attempt + 1}: HTTP {response.status_code}")
-
         except requests.exceptions.RequestException as e:
             logger.warning(f"Connection error on webhook setup (attempt {attempt + 1}): {e}")
-
         if attempt < max_retries - 1:
             delay = initial_delay * (2 ** attempt)
             logger.info(f"Retrying in {delay} seconds...")
             time.sleep(delay)
-
     logger.error("❌ Failed to set webhook after multiple retries. Bot will not receive updates.")
 
-def run_bot_worker():
-    """Starts the bot application's update processing loop."""
-    try:
-        if app_state['bot_app']:
-            app_state['bot_app'].run_until_shutdown(
-                update_queue=app_state['update_queue'],
-                stop_event=app_state['shutdown_event']
-            )
-    except Exception as e:
-        logger.error(f"Bot worker thread failed: {e}")
-
-def shutdown_handler(signum, frame):
-    """Graceful shutdown handler for signals."""
-    logger.info(f"Signal {signum} received, initiating shutdown.")
-    app_state['shutdown_event'].set()
-    sys.exit(0)
-
-def main():
-    """Main function to initialize and run the application."""
+async def main():
+    """Main asynchronous function to initialize and run the application."""
     if not initialize_mongodb():
         logger.error("Failed to connect to MongoDB, exiting.")
         sys.exit(1)
@@ -1033,19 +996,21 @@ def main():
     if not app_state['bot_app']:
         logger.error("Failed to initialize Telegram bot, exiting.")
         sys.exit(1)
-
-    atexit.register(close_mongodb_connection)
     
-    bot_thread = threading.Thread(target=run_bot_worker, daemon=True)
-    bot_thread.start()
-    
+    # We must set the webhook before starting the server
+    # The set_webhook_sync() function uses requests, which is a sync library
+    # The async nature of the main function allows us to call it directly.
     set_webhook_sync()
 
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
+    # Create a Hypercorn configuration object
+    config = HypercornConfig()
+    config.bind = [f"0.0.0.0:{PORT}"]
 
-    logger.info("Starting Flask application with Waitress...")
-    serve(app, host='0.0.0.0', port=PORT, threads=10)
+    logger.info("Starting Quart application with Hypercorn...")
+    await serve(app, config)
 
 if __name__ == '__main__':
-    main()
+    # Use asyncio.run to start the async main function
+    asyncio.run(main())
+
+
