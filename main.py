@@ -168,16 +168,14 @@ def initialize_mongodb():
 # Quart application
 app = Quart(__name__)
 
-# Video Player Frontend with HLS support
+# Simple Video Player Frontend
 PLAYER_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }} - Video Player</title>
-    <script src="https://vjs.zencdn.net/8.0.4/video.min.js"></script>
-    <link href="https://vjs.zencdn.net/8.0.4/video-js.css" rel="stylesheet">
+    <title>{{ title }} - StreamPlayer</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -185,12 +183,9 @@ PLAYER_HTML = """
             background: #000;
             color: white;
             min-height: 100vh;
-            display: flex;
-            flex-direction: column;
         }
         .header {
             background: rgba(0,0,0,0.9);
-            backdrop-filter: blur(10px);
             padding: 1rem 2rem;
             border-bottom: 1px solid rgba(255,255,255,0.1);
         }
@@ -199,30 +194,30 @@ PLAYER_HTML = """
             font-size: 1.5rem;
             font-weight: 700;
         }
-        .video-container {
-            flex: 1;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
             padding: 2rem;
-            background: radial-gradient(circle at center, #1a1a1a 0%, #000 100%);
         }
         .video-player {
             width: 100%;
-            max-width: 1280px;
+            max-width: 100%;
             background: #000;
             border-radius: 12px;
             overflow: hidden;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            margin-bottom: 2rem;
         }
-        .video-js {
-            width: 100% !important;
-            height: auto !important;
-            max-height: 80vh;
+        video {
+            width: 100%;
+            height: auto;
+            max-height: 70vh;
+            display: block;
         }
         .video-info {
             padding: 1.5rem;
-            background: linear-gradient(135deg, rgba(229, 9, 20, 0.1) 0%, rgba(0,0,0,0.3) 100%);
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            margin-bottom: 2rem;
         }
         .video-title {
             font-size: 1.8rem;
@@ -270,7 +265,6 @@ PLAYER_HTML = """
         .btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 8px 25px rgba(229, 9, 20, 0.4);
-            background: linear-gradient(45deg, #ff3030, #e50914);
         }
         .btn-secondary {
             background: rgba(255,255,255,0.1);
@@ -278,12 +272,9 @@ PLAYER_HTML = """
         }
         .btn-secondary:hover {
             background: rgba(255,255,255,0.2);
-            box-shadow: 0 8px 25px rgba(255,255,255,0.1);
         }
-        .library-grid {
-            max-width: 1280px;
-            margin: 2rem auto;
-            padding: 0 2rem;
+        .library-section {
+            margin-top: 3rem;
         }
         .library-title {
             font-size: 1.5rem;
@@ -319,37 +310,22 @@ PLAYER_HTML = """
             margin-bottom: 0.5rem;
         }
         .loading {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 200px;
+            text-align: center;
+            padding: 2rem;
             color: #666;
         }
         .error-state {
             text-align: center;
-            padding: 4rem 2rem;
+            padding: 2rem;
             color: #666;
         }
         .error-state h2 {
             color: #e50914;
             margin-bottom: 1rem;
         }
-        .format-selector {
-            margin-bottom: 1rem;
-        }
-        .format-selector select {
-            padding: 0.5rem;
-            background: rgba(255,255,255,0.1);
-            color: white;
-            border: 1px solid rgba(255,255,255,0.2);
-            border-radius: 4px;
-            margin-left: 0.5rem;
-        }
         @media (max-width: 768px) {
             .header { padding: 1rem; }
-            .video-container { padding: 1rem; }
-            .video-info { padding: 1rem; }
-            .video-title { font-size: 1.3rem; }
+            .container { padding: 1rem; }
             .controls { flex-direction: column; }
             .content-list { grid-template-columns: 1fr; }
         }
@@ -360,113 +336,58 @@ PLAYER_HTML = """
         <h1>🎬 StreamPlayer</h1>
     </div>
 
-    {% if video_url %}
-    <div class="video-container">
+    <div class="container">
+        {% if video_url %}
         <div class="video-player">
-            <div class="format-selector">
-                <label for="format-select">Streaming Format:</label>
-                <select id="format-select" onchange="changeFormat()">
-                    <option value="direct">Direct Stream</option>
-                    <option value="m3u8">HLS (M3U8)</option>
-                </select>
+            <video controls preload="metadata" crossorigin="anonymous">
+                <source src="{{ video_url }}" type="{{ mime_type }}">
+                Your browser does not support the video tag.
+            </video>
+        </div>
+        
+        <div class="video-info">
+            <h2 class="video-title">{{ title }}</h2>
+            <div class="video-meta">
+                <span class="meta-item">{{ content_type }}</span>
+                {% if year %}<span class="meta-item">{{ year }}</span>{% endif %}
+                {% if season and episode %}<span class="meta-item">S{{ season }}E{{ episode }}</span>{% endif %}
+                {% if genre %}<span class="meta-item">{{ genre }}</span>{% endif %}
             </div>
-            
-            <video-js
-                id="video-player"
-                class="video-js vjs-default-skin"
-                controls
-                preload="auto"
-                data-setup="{}">
-                <source id="video-source" src="{{ video_url }}" type="{{ mime_type }}">
-                <p class="vjs-no-js">
-                    To view this video please enable JavaScript, and consider upgrading to a web browser that
-                    <a href="https://videojs.com/html5-video-support/" target="_blank">supports HTML5 video</a>.
-                </p>
-            </video-js>
-            
-            <div class="video-info">
-                <h2 class="video-title">{{ title }}</h2>
-                <div class="video-meta">
-                    <span class="meta-item">{{ content_type }}</span>
-                    {% if year %}<span class="meta-item">{{ year }}</span>{% endif %}
-                    {% if season and episode %}<span class="meta-item">S{{ season }}E{{ episode }}</span>{% endif %}
-                    {% if genre %}<span class="meta-item">{{ genre }}</span>{% endif %}
-                </div>
-                {% if description %}
-                <p class="video-description">{{ description }}</p>
-                {% endif %}
-                <div class="controls">
-                    <a href="{{ video_url }}" download class="btn">
-                        📥 Download
-                    </a>
-                    <a href="intent:{{ video_url }}#Intent;package=com.mxtech.videoplayer.ad;end;" class="btn-secondary btn">
-                        📱 MX Player
-                    </a>
-                    <a href="vlc://{{ video_url }}" class="btn-secondary btn">
-                        🎥 VLC Player
-                    </a>
-                    <button onclick="copyToClipboard('{{ video_url }}')" class="btn-secondary btn">
-                        📋 Copy URL
-                    </button>
-                    <button onclick="copyToClipboard(getCurrentStreamUrl())" class="btn-secondary btn">
-                        📋 Copy Stream URL
-                    </button>
-                </div>
+            {% if description %}
+            <p class="video-description">{{ description }}</p>
+            {% endif %}
+            <div class="controls">
+                <a href="{{ video_url }}" download class="btn">
+                    📥 Download
+                </a>
+                <a href="intent:{{ video_url }}#Intent;package=com.mxtech.videoplayer.ad;end;" class="btn-secondary btn">
+                    📱 MX Player
+                </a>
+                <a href="vlc://{{ video_url }}" class="btn-secondary btn">
+                    🎥 VLC Player
+                </a>
+                <button onclick="copyToClipboard('{{ video_url }}')" class="btn-secondary btn">
+                    📋 Copy URL
+                </button>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="library-section">
+            <h2 class="library-title">Your Library</h2>
+            <div id="content-list" class="content-list">
+                <div class="loading">Loading your content...</div>
             </div>
         </div>
     </div>
-    
+
     <script>
-        let player;
-        const baseUrl = '{{ video_url }}';
-        const fileId = baseUrl.split('/').pop();
-        
-        document.addEventListener('DOMContentLoaded', function() {
-            player = videojs('video-player', {
-                fluid: true,
-                responsive: true,
-                playbackRates: [0.5, 1, 1.25, 1.5, 2],
-                html5: {
-                    vhs: {
-                        overrideNative: true
-                    }
-                }
-            });
-        });
-        
-        function changeFormat() {
-            const format = document.getElementById('format-select').value;
-            const source = document.getElementById('video-source');
-            
-            if (format === 'm3u8') {
-                const m3u8Url = `/stream/${fileId}/playlist.m3u8`;
-                player.src({
-                    src: m3u8Url,
-                    type: 'application/x-mpegURL'
-                });
-            } else {
-                player.src({
-                    src: baseUrl,
-                    type: '{{ mime_type }}'
-                });
-            }
-        }
-        
-        function getCurrentStreamUrl() {
-            const format = document.getElementById('format-select').value;
-            if (format === 'm3u8') {
-                return `/stream/${fileId}/playlist.m3u8`;
-            }
-            return baseUrl;
-        }
-        
         function copyToClipboard(text) {
-            const fullUrl = text.startsWith('http') ? text : window.location.origin + text;
-            navigator.clipboard.writeText(fullUrl).then(() => {
+            navigator.clipboard.writeText(text).then(() => {
                 alert('URL copied to clipboard!');
             }).catch(() => {
                 const textArea = document.createElement('textarea');
-                textArea.value = fullUrl;
+                textArea.value = text;
                 document.body.appendChild(textArea);
                 textArea.select();
                 document.execCommand('copy');
@@ -474,17 +395,7 @@ PLAYER_HTML = """
                 alert('URL copied to clipboard!');
             });
         }
-    </script>
-    {% endif %}
 
-    <div class="library-grid">
-        <h2 class="library-title">Your Library</h2>
-        <div id="content-list" class="content-list">
-            <div class="loading">Loading your content...</div>
-        </div>
-    </div>
-
-    <script>
         function playVideo(videoUrl, title, contentType, year, season, episode, genre, description) {
             const params = new URLSearchParams({
                 url: videoUrl,
@@ -525,7 +436,7 @@ PLAYER_HTML = """
                     const genres = Array.isArray(item.genre) ? item.genre.join(', ') : (item.genre || 'Unknown');
                     
                     return `
-                        <div class="content-item" onclick="playVideo('${item.stream_url}', '${item.title || 'Untitled'}', '${item.type === 'movie' ? 'Movie' : 'Series'}', '${item.year || ''}', '${item.season || ''}', '${item.episode || ''}', '${genres}', '${item.description || ''}')">
+                        <div class="content-item" onclick="playVideo('${item.stream_url}', '${(item.title || 'Untitled').replace(/'/g, '\\\')}', '${item.type === 'movie' ? 'Movie' : 'Series'}', '${item.year || ''}', '${item.season || ''}', '${item.episode || ''}', '${genres.replace(/'/g, '\\\')}', '${(item.description || '').replace(/'/g, '\\\'')}')">
                             <h3>${item.title || 'Untitled'}</h3>
                             <p>${meta} • ${genres}</p>
                             <p>${item.description ? item.description.substring(0, 100) + '...' : 'No description available'}</p>
@@ -679,7 +590,7 @@ async def get_content_library():
 
 @app.route('/stream/<file_id>')
 async def stream_file(file_id):
-    """Stream video files using chunk-based approach for large files."""
+    """Stream video files with chunked transfer encoding to avoid Content-Length issues."""
     try:
         if app_state['files_collection'] is None:
             abort(503)
@@ -697,206 +608,63 @@ async def stream_file(file_id):
         file_size = file_info.get('file_size', 0)
         mime_type = get_media_mime_type(filename)
         
-        # Use chunk-based streaming for large files
-        chunk_size = 1024 * 1024  # 1MB chunks
+        # Try to get Telegram file URL for small files
+        telegram_file_url = None
+        if file_size <= TELEGRAM_FILE_SIZE_LIMIT:
+            try:
+                file_obj = await app_state['bot_app'].bot.get_file(file_id)
+                telegram_file_url = file_obj.file_path
+                logger.info(f"Got Telegram URL for {file_id}: {telegram_file_url}")
+            except Exception as e:
+                logger.error(f"Error getting Telegram file URL for {file_id}: {e}")
+        
+        if not telegram_file_url:
+            # For large files or if Telegram API fails, return error
+            logger.error(f"Cannot stream file {file_id}: No accessible URL")
+            abort(404)
         
         # Handle range requests
         range_header = request.headers.get('Range', '').strip()
-        start = 0
-        end = file_size - 1 if file_size > 0 else 0
         
-        if range_header:
-            range_match = re.search(r'bytes=(\d+)-(\d*)', range_header)
-            if range_match:
-                start = int(range_match.group(1))
-                if range_match.group(2):
-                    end = int(range_match.group(2))
-                
-                if file_size > 0:
-                    start = max(0, min(start, file_size - 1))
-                    end = max(start, min(end, file_size - 1))
-        
-        async def generate_chunks():
+        async def stream_content():
             try:
-                current_pos = start
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    while current_pos <= end:
-                        chunk_end = min(current_pos + chunk_size - 1, end)
-                        
-                        # Get chunk from Telegram using message forwarding approach
-                        try:
-                            # Try to get file URL from Telegram
-                            if file_size <= TELEGRAM_FILE_SIZE_LIMIT:
-                                file_obj = await app_state['bot_app'].bot.get_file(file_id)
-                                telegram_file_url = file_obj.file_path
-                                
-                                headers = {'Range': f'bytes={current_pos}-{chunk_end}'}
-                                async with client.stream("GET", telegram_file_url, headers=headers) as response:
-                                    if response.status_code in [200, 206]:
-                                        async for chunk in response.aiter_bytes(8192):
-                                            yield chunk
-                                            current_pos += len(chunk)
-                                    else:
-                                        logger.error(f"HTTP {response.status_code} from Telegram API")
-                                        break
-                            else:
-                                # For large files, use a different approach
-                                # Create a proxy stream using the storage channel
-                                yield await get_large_file_chunk(file_id, current_pos, chunk_end)
-                                current_pos = chunk_end + 1
-                        except Exception as e:
-                            logger.error(f"Error streaming chunk {current_pos}-{chunk_end}: {e}")
-                            break
-                        
+                headers = {}
+                if range_header:
+                    headers['Range'] = range_header
+                
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    async with client.stream("GET", telegram_file_url, headers=headers) as response:
+                        response.raise_for_status()
+                        async for chunk in response.aiter_bytes(8192):
+                            yield chunk
+                            
             except Exception as e:
-                logger.error(f"Streaming error for {file_id}: {e}")
+                logger.error(f"Error streaming from Telegram: {e}")
+                # Yield empty chunk to close the stream gracefully
+                yield b''
         
+        # Determine response headers - DON'T set Content-Length to avoid mismatch
         response_headers = {
             'Content-Type': mime_type,
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'public, max-age=3600',
-            'Access-Control-Allow-Origin': '*'
+            'Access-Control-Allow-Origin': '*',
+            'Transfer-Encoding': 'chunked'  # Use chunked encoding
         }
         
-        if range_header and file_size > 0:
-            response_headers.update({
-                'Content-Range': f'bytes {start}-{end}/{file_size}',
-                'Content-Length': str(end - start + 1)
-            })
+        status_code = 200
+        if range_header:
+            # For range requests, let the upstream server handle Content-Range
             status_code = 206
-        else:
-            if file_size > 0:
-                response_headers['Content-Length'] = str(file_size)
-            status_code = 200
         
         return Response(
-            generate_chunks(),
+            stream_content(),
             status=status_code,
             headers=response_headers
         )
         
     except Exception as e:
         logger.error(f"Stream error for {file_id}: {e}")
-        abort(500)
-
-async def get_large_file_chunk(file_id, start, end):
-    """Get chunk for large files using alternative method."""
-    try:
-        # For large files that exceed Telegram's API limit,
-        # we'll return a placeholder chunk or implement a proxy method
-        # This is a simplified implementation
-        chunk_size = end - start + 1
-        return b'\x00' * min(chunk_size, 1024)  # Placeholder data
-    except Exception as e:
-        logger.error(f"Error getting large file chunk: {e}")
-        return b''
-
-@app.route('/stream/<file_id>/playlist.m3u8')
-async def stream_m3u8_playlist(file_id):
-    """Generate M3U8 playlist for HLS streaming."""
-    try:
-        if app_state['files_collection'] is None:
-            abort(503)
-        
-        # Get file info from database
-        file_info = app_state['files_collection'].find_one(
-            {'_id': file_id},
-            {'filename': 1, 'file_size': 1}
-        )
-        
-        if not file_info:
-            abort(404)
-        
-        filename = file_info['filename']
-        file_size = file_info.get('file_size', 0)
-        
-        # Generate simple M3U8 playlist
-        domain = get_deployment_domain()
-        base_url = f"{domain}/stream/{file_id}"
-        
-        # Calculate segments (10-second segments approximately)
-        segment_duration = 10.0
-        total_duration = file_size / (1024 * 1024)  # Rough estimate
-        num_segments = max(1, int(total_duration / segment_duration))
-        
-        playlist_content = f"""#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:{int(segment_duration + 1)}
-#EXT-X-MEDIA-SEQUENCE:0
-"""
-        
-        for i in range(num_segments):
-            playlist_content += f"#EXTINF:{segment_duration:.1f},\n"
-            playlist_content += f"{base_url}/segment{i}.ts\n"
-        
-        playlist_content += "#EXT-X-ENDLIST\n"
-        
-        return Response(
-            playlist_content,
-            status=200,
-            headers={
-                'Content-Type': 'application/x-mpegURL',
-                'Cache-Control': 'no-cache',
-                'Access-Control-Allow-Origin': '*'
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"M3U8 playlist error for {file_id}: {e}")
-        abort(500)
-
-@app.route('/stream/<file_id>/segment<int:segment_num>.ts')
-async def stream_segment(file_id, segment_num):
-    """Stream individual segments for HLS."""
-    try:
-        # Calculate segment byte range
-        segment_size = 1024 * 1024  # 1MB per segment
-        start_byte = segment_num * segment_size
-        end_byte = start_byte + segment_size - 1
-        
-        # Get file info
-        file_info = app_state['files_collection'].find_one({'_id': file_id})
-        if not file_info:
-            abort(404)
-        
-        file_size = file_info.get('file_size', 0)
-        if start_byte >= file_size:
-            abort(404)
-        
-        end_byte = min(end_byte, file_size - 1)
-        
-        async def generate_segment():
-            try:
-                if file_size <= TELEGRAM_FILE_SIZE_LIMIT:
-                    file_obj = await app_state['bot_app'].bot.get_file(file_id)
-                    telegram_file_url = file_obj.file_path
-                    
-                    headers = {'Range': f'bytes={start_byte}-{end_byte}'}
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        async with client.stream("GET", telegram_file_url, headers=headers) as response:
-                            if response.status_code in [200, 206]:
-                                async for chunk in response.aiter_bytes(8192):
-                                    yield chunk
-                else:
-                    # For large files, return placeholder segment
-                    yield b'\x00' * min(end_byte - start_byte + 1, segment_size)
-            except Exception as e:
-                logger.error(f"Segment streaming error: {e}")
-        
-        return Response(
-            generate_segment(),
-            status=200,
-            headers={
-                'Content-Type': 'video/mp2t',
-                'Accept-Ranges': 'bytes',
-                'Content-Length': str(end_byte - start_byte + 1),
-                'Cache-Control': 'public, max-age=3600',
-                'Access-Control-Allow-Origin': '*'
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Segment error for {file_id}, segment {segment_num}: {e}")
         abort(500)
 
 # Telegram Bot Handlers
@@ -906,22 +674,17 @@ async def start_command(update, context):
         domain = get_deployment_domain()
         frontend_url = domain if domain else "https://your-app.koyeb.app"
         welcome_text = f"""
-🎬 **StreamPlayer - Advanced Video Streaming Bot** 🎬
+🎬 **StreamPlayer - Simple Video Streaming Bot** 🎬
 
-Welcome to your streaming platform! Upload any video and get instant streaming URLs with multiple format support.
+Welcome to your streaming platform! Upload any video and get instant streaming URLs.
 
 **✨ Features:**
 • Direct video streaming in browser
-• HLS (M3U8) streaming for large files
-• Video.js player with advanced controls
-• Mobile & Android TV compatible
+• HTML5 video player with controls
+• Mobile & desktop compatible
 • MX Player & VLC integration
 • Movie & Series categorization
-
-**📱 Streaming Formats:**
-• Direct Stream - For smaller files
-• HLS (M3U8) - For large files and better streaming
-• Adaptive bitrate support
+• Download support
 
 **🎯 Commands:**
 /start - Welcome message
@@ -929,11 +692,15 @@ Welcome to your streaming platform! Upload any video and get instant streaming U
 /player - Access web player
 /stats - View library statistics
 
+**📝 File Support:**
+• Videos up to 20MB: Direct streaming
+• Larger files: Download only
+• All major video formats supported
+
 **🚀 Get Started:**
-1. Send me any video file (up to 4GB)
-2. I'll process and categorize it
-3. Choose streaming format (Direct/HLS)
-4. Access your player at: {frontend_url}
+1. Send me a video file
+2. I'll categorize it (Movie/Series)  
+3. Watch instantly at: {frontend_url}
 
 Ready to start streaming! 🚀
 """
@@ -997,325 +764,452 @@ async def stats_command(update, context):
         
         movies_count = app_state['content_collection'].count_documents({'type': 'movie', 'status': 'completed'})
         series_count = app_state['content_collection'].count_documents({'type': 'series', 'status': 'completed'})
-        total_files_count = app_state['files_collection'].count_documents({})
+        total_files = app_state['files_collection'].count_documents({})
+        total_content = movies_count + series_count
         
-        # Calculate total file size
+        # Get storage information
         pipeline = [
-            {"$group": {"_id": None, "total_size": {"$sum": "$file_size"}}}
+            {'$group': {
+                '_id': None,
+                'total_size': {'$sum': '$file_size'},
+                'count': {'$sum': 1}
+            }}
         ]
-        size_result = list(app_state['files_collection'].aggregate(pipeline))
-        total_size = size_result[0]['total_size'] if size_result else 0
-        total_size_gb = total_size / (1024**3)
+        storage_stats = list(app_state['files_collection'].aggregate(pipeline))
+        total_size = storage_stats[0]['total_size'] if storage_stats else 0
+        size_gb = total_size / (1024**3)
         
-        message = f"""
-📊 **StreamPlayer Library Statistics** 📊
+        stats_text = f"""
+📊 **StreamPlayer Statistics** 📊
 
-• **Movies:** {movies_count}
-• **Series:** {series_count}  
-• **Total Files:** {total_files_count}
-• **Total Storage:** {total_size_gb:.2f} GB
+**Content Library:**
+🎬 Movies: {movies_count}
+📺 Series: {series_count}
+📁 Total Content: {total_content}
 
-**Streaming Support:**
-• Direct Streaming: Files ≤ 20MB
-• HLS Streaming: All file sizes
-• Adaptive Bitrate: Available
+**Storage:**
+📂 Total Files: {total_files}
+💾 Storage Used: {size_gb:.2f} GB
 
-Keep uploading content to grow your library!
+**Bot Status:**
+✅ Database: Connected
+✅ Streaming: Active
+✅ Web Player: Available
+
+Use /library to browse your content or /player to access the web interface.
 """
-        await update.message.reply_text(message, parse_mode='Markdown')
+        await update.message.reply_text(stats_text, parse_mode='Markdown')
+        
     except Exception as e:
         logger.error(f"Stats command error: {e}")
         await update.message.reply_text("An error occurred while fetching statistics.")
 
-async def handle_video_file(update, context):
-    """Handle incoming video or document files, save to DB, and prompt for categorization."""
+async def handle_document(update, context):
+    """Handle file uploads from users."""
     try:
-        file_to_process = None
-        if update.message.video:
-            file_to_process = update.message.video
-        elif update.message.document:
-            file_to_process = update.message.document
-        else:
-            await update.message.reply_text("Please send a video file or a document containing a video.")
+        user_id = update.effective_user.id
+        document = update.message.document
+        
+        if not document:
+            await update.message.reply_text("No file received. Please try again.")
             return
-
-        filename = file_to_process.file_name
+        
+        filename = document.file_name or "unknown_file"
+        file_size = document.file_size or 0
         file_type = get_file_type(filename)
         
         if file_type == 'unknown':
             await update.message.reply_text(
-                "This file does not appear to be a supported video or audio format. Please upload a valid media file."
-            )
-            return
-
-        if file_to_process.file_size > MAX_FILE_SIZE:
-            await update.message.reply_text(
-                f"File size exceeds the {MAX_FILE_SIZE / (1024**3):.1f} GB limit."
+                "❌ Unsupported file format. Please send video or audio files only.\n\n"
+                f"Supported formats: {', '.join(SUPPORTED_VIDEO_FORMATS | SUPPORTED_AUDIO_FORMATS)}"
             )
             return
         
-        if not STORAGE_CHANNEL_ID:
-            await update.message.reply_text("Storage channel ID is not configured. Please contact the administrator.")
+        if file_size > MAX_FILE_SIZE:
+            await update.message.reply_text(f"❌ File too large. Maximum size is {MAX_FILE_SIZE / (1024**3):.1f} GB")
             return
-
-        # Inform about streaming method based on file size
-        streaming_info = "HLS (M3U8) streaming" if file_to_process.file_size > TELEGRAM_FILE_SIZE_LIMIT else "Direct streaming"
-        await update.message.reply_text(f"Uploading your file ({streaming_info} will be available)... this might take a moment.")
         
-        # Upload to the storage channel
-        if update.message.video:
-            storage_message = await context.bot.send_video(
-                chat_id=STORAGE_CHANNEL_ID,
-                video=file_to_process.file_id,
-                caption=f"Stored by {update.message.from_user.username or update.message.from_user.full_name}"
-            )
-        else:
-            storage_message = await context.bot.send_document(
-                chat_id=STORAGE_CHANNEL_ID,
-                document=file_to_process.file_id,
-                caption=f"Stored by {update.message.from_user.username or update.message.from_user.full_name}"
-            )
-
-        if not storage_message.effective_attachment:
-            await update.message.reply_text("An error occurred while uploading the file to the storage channel.")
-            return
-
-        file_id_in_channel = storage_message.effective_attachment.file_id
-        domain = get_deployment_domain()
+        # Send processing message
+        processing_msg = await update.message.reply_text("🔄 Processing your file...")
         
-        if not domain:
-            await update.message.reply_text("Frontend URL is not configured. Cannot generate a stream link.")
-            return
-
-        file_url = f"{domain.rstrip('/')}/stream/{file_id_in_channel}"
-
-        file_doc = {
-            '_id': file_id_in_channel,
-            'original_file_id': file_to_process.file_id,
-            'file_url': file_url,
+        # Store file info in database
+        file_id = document.file_id
+        file_record = {
+            '_id': file_id,
+            'user_id': user_id,
             'filename': filename,
-            'file_size': file_to_process.file_size,
-            'user_id': update.message.from_user.id,
+            'file_size': file_size,
+            'file_type': file_type,
             'uploaded_date': datetime.now(),
-            'streaming_type': 'hls' if file_to_process.file_size > TELEGRAM_FILE_SIZE_LIMIT else 'direct'
-        }
-
-        # Use upsert to prevent duplicate key errors
-        app_state['files_collection'].update_one(
-            {'_id': file_id_in_channel},
-            {'$set': file_doc},
-            upsert=True
-        )
-
-        content_doc_query = {'file_id': file_id_in_channel, 'added_by': update.message.from_user.id}
-        existing_content = app_state['content_collection'].find_one(content_doc_query)
-        
-        if existing_content:
-            await update.message.reply_text("This file has already been processed. It is available in your library.")
-            return
-
-        content_doc = {
-            'file_id': file_id_in_channel,
-            'stream_url': file_url,
-            'added_by': update.message.from_user.id,
-            'added_date': datetime.now(),
-            'status': 'categorizing'
+            'mime_type': get_media_mime_type(filename)
         }
         
-        result = app_state['content_collection'].insert_one(content_doc)
-        content_id = str(result.inserted_id)
-
+        try:
+            app_state['files_collection'].insert_one(file_record)
+        except pymongo.errors.DuplicateKeyError:
+            # File already exists, update the record
+            app_state['files_collection'].update_one(
+                {'_id': file_id},
+                {'$set': file_record}
+            )
+        
+        # Create stream URL
+        domain = get_deployment_domain()
+        if domain:
+            stream_url = f"{domain}/stream/{file_id}"
+        else:
+            stream_url = f"https://your-app.koyeb.app/stream/{file_id}"
+        
+        # Create content categorization buttons
         keyboard = [
             [
-                InlineKeyboardButton("🎬 Movie", callback_data=f"categorize_movie_{content_id}"),
-                InlineKeyboardButton("📺 Series", callback_data=f"categorize_series_{content_id}")
-            ]
+                InlineKeyboardButton("🎬 Movie", callback_data=f"categorize_movie_{file_id}"),
+                InlineKeyboardButton("📺 Series", callback_data=f"categorize_series_{file_id}")
+            ],
+            [InlineKeyboardButton("📂 Just Store File", callback_data=f"store_only_{file_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Send success message with categorization options
+        success_text = f"""
+✅ **File Uploaded Successfully!**
 
-        await update.message.reply_text(
-            "✅ File uploaded! Now, please categorize this content:",
+**📄 File Info:**
+• Name: `{filename}`
+• Size: {file_size / (1024**2):.1f} MB
+• Type: {file_type.title()}
+
+**🔗 Stream URL:**
+`{stream_url}`
+
+**Next Step:** How would you like to categorize this content?
+"""
+        
+        await processing_msg.edit_text(
+            success_text,
+            parse_mode='Markdown',
             reply_markup=reply_markup
         )
-        context.user_data['current_metadata_id'] = content_id
+        
     except Exception as e:
-        logger.error(f"Handle video file error: {e}")
-        await update.message.reply_text("An unexpected error occurred while processing your file.")
+        logger.error(f"Document handler error: {e}")
+        await update.message.reply_text("An error occurred while processing your file. Please try again.")
 
 async def handle_categorization(update, context):
-    """Handle the inline button callback for content categorization."""
+    """Handle content categorization callbacks."""
     try:
         query = update.callback_query
         await query.answer()
-        data = query.data.split('_')
-        category_type = data[1]
-        content_id = data[2]
-
-        app_state['content_collection'].update_one(
-            {'_id': ObjectId(content_id)},
-            {'$set': {'type': category_type, 'status': 'metadata_pending'}}
-        )
-
-        message = "✅ Content categorized! Now, please provide the metadata.\n"
-        if category_type == 'movie':
-            message += "Send me the **title**, **year**, **genre**, and **description** in this format:\n\n"
-            message += "`Title: My Awesome Movie\nYear: 2023\nGenre: Action, Sci-Fi\nDescription: A great description of the movie.`"
-        else:
-            message += "Send me the **title**, **season**, **episode**, **genre**, and **description** in this format:\n\n"
-            message += "`Title: My Awesome Series\nSeason: 1\nEpisode: 5\nGenre: Drama\nDescription: A description for this episode.`"
         
-        await query.edit_message_text(message, parse_mode='Markdown')
-        context.user_data['current_metadata_id'] = content_id
+        data = query.data
+        user_id = update.effective_user.id
+        
+        if data.startswith("categorize_movie_"):
+            file_id = data.replace("categorize_movie_", "")
+            await start_movie_categorization(query, file_id)
+        elif data.startswith("categorize_series_"):
+            file_id = data.replace("categorize_series_", "")
+            await start_series_categorization(query, file_id)
+        elif data.startswith("store_only_"):
+            file_id = data.replace("store_only_", "")
+            await store_file_only(query, file_id)
+        else:
+            await query.edit_message_text("Invalid option selected.")
+            
     except Exception as e:
-        logger.error(f"Handle categorization error: {e}")
-        await query.edit_message_text("An error occurred during categorization. Please try again.")
+        logger.error(f"Categorization handler error: {e}")
+        await query.edit_message_text("An error occurred during categorization.")
 
-async def handle_metadata_input(update, context):
-    """Handle text input for metadata and update the content document."""
+async def start_movie_categorization(query, file_id):
+    """Start movie categorization process."""
     try:
-        content_id = context.user_data.pop('current_metadata_id', None)
-        if not content_id:
+        # Get file info
+        file_info = app_state['files_collection'].find_one({'_id': file_id})
+        if not file_info:
+            await query.edit_message_text("File not found.")
             return
         
-        text = update.message.text
-        metadata = {}
-        title_match = re.search(r'Title: (.+)', text, re.IGNORECASE)
-        year_match = re.search(r'Year: (\d{4})', text, re.IGNORECASE)
-        season_match = re.search(r'Season: (\d+)', text, re.IGNORECASE)
-        episode_match = re.search(r'Episode: (\d+)', text, re.IGNORECASE)
-        genre_match = re.search(r'Genre: (.+)', text, re.IGNORECASE)
-        desc_match = re.search(r'Description: (.+)', text, re.IGNORECASE)
-
-        if title_match:
-            metadata['title'] = title_match.group(1).strip()
-        if year_match:
-            metadata['year'] = int(year_match.group(1))
-        if season_match:
-            metadata['season'] = int(season_match.group(1))
-        if episode_match:
-            metadata['episode'] = int(episode_match.group(1))
-        if genre_match:
-            genres = [g.strip() for g in genre_match.group(1).split(',')]
-            metadata['genre'] = genres
-        if desc_match:
-            metadata['description'] = desc_match.group(1).strip()
+        filename = file_info['filename']
         
-        app_state['content_collection'].update_one(
-            {'_id': ObjectId(content_id)},
-            {'$set': {**metadata, 'status': 'completed'}}
-        )
+        # Try to extract title from filename
+        title = extract_title_from_filename(filename)
+        
+        # Store initial content record
+        domain = get_deployment_domain() or "https://your-app.koyeb.app"
+        content_record = {
+            '_id': str(ObjectId()),
+            'file_id': file_id,
+            'type': 'movie',
+            'title': title,
+            'filename': filename,
+            'added_by': query.from_user.id,
+            'added_date': datetime.now(),
+            'stream_url': f"{domain}/stream/{file_id}",
+            'status': 'completed'
+        }
+        
+        app_state['content_collection'].insert_one(content_record)
+        
+        success_text = f"""
+🎬 **Movie Added Successfully!**
 
-        # Get the updated content for the streaming links
-        content = app_state['content_collection'].find_one({'_id': ObjectId(content_id)})
-        if content:
-            domain = get_deployment_domain()
-            play_url = f"{domain}/play?url={content['stream_url']}&title={metadata.get('title', 'Untitled')}&type={content['type']}"
-            
-            # Check if HLS streaming is available
-            file_info = app_state['files_collection'].find_one({'_id': content['file_id']})
-            streaming_type = file_info.get('streaming_type', 'direct') if file_info else 'direct'
-            
-            message = f"✅ Metadata saved successfully! Your content is now available.\n\n"
-            message += f"🎬 **{metadata.get('title', 'Untitled')}**\n"
-            message += f"▶️ Watch now: {play_url}\n\n"
-            
-            if streaming_type == 'hls':
-                message += f"📱 HLS Stream (M3U8): {content['stream_url']}/playlist.m3u8\n"
-            
-            message += f"📱 Direct Stream: {content['stream_url']}\n\n"
-            message += "🎥 **Streaming Options Available:**\n"
-            message += "• Browser Player with format selection\n"
-            message += "• Direct streaming for external players\n"
-            if streaming_type == 'hls':
-                message += "• HLS streaming for better performance"
-            
-            await update.message.reply_text(message, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("✅ Metadata saved successfully! Your content is now available in your library.")
-            
+**Title:** {title}
+**File:** {filename}
+
+The movie has been added to your library and is available for streaming!
+
+Use /library to see all your content or /player to access the web interface.
+"""
+        
+        await query.edit_message_text(success_text, parse_mode='Markdown')
+        
     except Exception as e:
-        logger.error(f"Handle metadata input error: {e}")
-        await update.message.reply_text("An error occurred while saving the metadata. Please try again.")
+        logger.error(f"Movie categorization error: {e}")
+        await query.edit_message_text("An error occurred while adding the movie.")
 
-def initialize_telegram_bot_app():
-    """Initialize Telegram bot application with handlers"""
-    if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN not provided")
-        return None
+async def start_series_categorization(query, file_id):
+    """Start series categorization process."""
     try:
-        bot_app = Application.builder().token(BOT_TOKEN).build()
-        bot_app.add_handler(CommandHandler("start", start_command))
-        bot_app.add_handler(CommandHandler("library", library_command))
-        bot_app.add_handler(CommandHandler("player", player_command))
-        bot_app.add_handler(CommandHandler("stats", stats_command))
-        bot_app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video_file))
-        bot_app.add_handler(CallbackQueryHandler(handle_categorization))
-        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_metadata_input))
-        logger.info("✅ Telegram bot initialized successfully!")
-        return bot_app
+        # Get file info
+        file_info = app_state['files_collection'].find_one({'_id': file_id})
+        if not file_info:
+            await query.edit_message_text("File not found.")
+            return
+        
+        filename = file_info['filename']
+        
+        # Try to extract series info from filename
+        series_info = extract_series_info_from_filename(filename)
+        
+        # Store initial content record
+        domain = get_deployment_domain() or "https://your-app.koyeb.app"
+        content_record = {
+            '_id': str(ObjectId()),
+            'file_id': file_id,
+            'type': 'series',
+            'title': series_info['title'],
+            'season': series_info['season'],
+            'episode': series_info['episode'],
+            'filename': filename,
+            'added_by': query.from_user.id,
+            'added_date': datetime.now(),
+            'stream_url': f"{domain}/stream/{file_id}",
+            'status': 'completed'
+        }
+        
+        app_state['content_collection'].insert_one(content_record)
+        
+        success_text = f"""
+📺 **Series Episode Added Successfully!**
+
+**Title:** {series_info['title']}
+**Season:** {series_info['season']}
+**Episode:** {series_info['episode']}
+**File:** {filename}
+
+The episode has been added to your library and is available for streaming!
+
+Use /library to see all your content or /player to access the web interface.
+"""
+        
+        await query.edit_message_text(success_text, parse_mode='Markdown')
+        
     except Exception as e:
-        logger.error(f"❌ Telegram bot initialization failed: {e}")
+        logger.error(f"Series categorization error: {e}")
+        await query.edit_message_text("An error occurred while adding the series episode.")
+
+async def store_file_only(query, file_id):
+    """Store file without categorization."""
+    try:
+        file_info = app_state['files_collection'].find_one({'_id': file_id})
+        if not file_info:
+            await query.edit_message_text("File not found.")
+            return
+        
+        filename = file_info['filename']
+        domain = get_deployment_domain() or "https://your-app.koyeb.app"
+        stream_url = f"{domain}/stream/{file_id}"
+        
+        success_text = f"""
+📂 **File Stored Successfully!**
+
+**File:** {filename}
+**Stream URL:** `{stream_url}`
+
+Your file is stored and accessible via the stream URL. You can categorize it later using the web interface.
+"""
+        
+        await query.edit_message_text(success_text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Store only error: {e}")
+        await query.edit_message_text("An error occurred while storing the file.")
+
+def extract_title_from_filename(filename):
+    """Extract movie title from filename."""
+    # Remove file extension
+    title = filename.rsplit('.', 1)[0] if '.' in filename else filename
+    
+    # Remove common patterns
+    patterns = [
+        r'\b\d{4}\b',  # Year
+        r'\b(720p|1080p|480p|4K|HD|BluRay|DVDRip|CAMRip|HDTV)\b',  # Quality
+        r'\b(x264|x265|H264|H265|HEVC)\b',  # Codecs
+        r'\[.*?\]',  # Brackets
+        r'\(.*?\)',  # Parentheses
+    ]
+    
+    for pattern in patterns:
+        title = re.sub(pattern, '', title, flags=re.IGNORECASE)
+    
+    # Clean up
+    title = re.sub(r'[._-]+', ' ', title)  # Replace dots, underscores, dashes with spaces
+    title = re.sub(r'\s+', ' ', title)     # Normalize whitespace
+    title = title.strip()
+    
+    return title or "Untitled Movie"
+
+def extract_series_info_from_filename(filename):
+    """Extract series information from filename."""
+    # Remove file extension
+    name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+    
+    # Common patterns for series episodes
+    patterns = [
+        r'(.+?)[.\s_-]+S(\d+)E(\d+)',  # Title.S01E01
+        r'(.+?)[.\s_-]+(\d+)x(\d+)',   # Title.1x01
+        r'(.+?)[.\s_-]+Season[.\s_-]*(\d+)[.\s_-]+Episode[.\s_-]*(\d+)',  # Title Season 1 Episode 01
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, name, re.IGNORECASE)
+        if match:
+            title = match.group(1)
+            season = int(match.group(2))
+            episode = int(match.group(3))
+            
+            # Clean title
+            title = re.sub(r'[._-]+', ' ', title)
+            title = re.sub(r'\s+', ' ', title)
+            title = title.strip()
+            
+            return {
+                'title': title or "Untitled Series",
+                'season': season,
+                'episode': episode
+            }
+    
+    # If no pattern matches, return defaults
+    return {
+        'title': name or "Untitled Series",
+        'season': 1,
+        'episode': 1
+    }
+
+async def unknown_command(update, context):
+    """Handle unknown commands."""
+    await update.message.reply_text(
+        "I don't understand that command. Use /start to see available commands."
+    )
+
+async def setup_telegram_bot():
+    """Initialize and configure the Telegram bot."""
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is required")
+        return None
+    
+    try:
+        # Create bot application
+        app = Application.builder().token(BOT_TOKEN).build()
+        
+        # Add handlers
+        app.add_handler(CommandHandler("start", start_command))
+        app.add_handler(CommandHandler("library", library_command))
+        app.add_handler(CommandHandler("player", player_command))
+        app.add_handler(CommandHandler("stats", stats_command))
+        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        app.add_handler(CallbackQueryHandler(handle_categorization))
+        app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+        
+        app_state['bot_app'] = app
+        logger.info("✅ Telegram bot initialized successfully!")
+        return app
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Telegram bot: {e}")
         return None
 
-def set_webhook_sync():
-    """Set webhook synchronously using requests with retry logic."""
-    domain = get_deployment_domain()
-    if not domain:
-        logger.error("❌ Cannot set webhook: Deployment domain not found.")
-        return
-
-    webhook_url = f"{domain}{WEBHOOK_PATH}"
-    app_state['webhook_url'] = webhook_url
-    logger.info(f"Setting webhook to: {webhook_url}")
-
-    max_retries = 5
-    initial_delay = 2
-
-    for attempt in range(max_retries):
-        try:
-            telegram_api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
-            response = requests.post(
-                telegram_api_url,
-                json={'url': webhook_url},
-                timeout=30
-            )
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('ok'):
-                    app_state['webhook_set'] = True
-                    logger.info("✅ Webhook set successfully!")
-                    return
-                else:
-                    logger.error(f"Failed to set webhook on attempt {attempt + 1}: {result.get('description')}")
-            else:
-                logger.error(f"Failed to set webhook on attempt {attempt + 1}: HTTP {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Connection error on webhook setup (attempt {attempt + 1}): {e}")
-        if attempt < max_retries - 1:
-            delay = initial_delay * (2 ** attempt)
-            logger.info(f"Retrying in {delay} seconds...")
-            time.sleep(delay)
-    logger.error("❌ Failed to set webhook after multiple retries. Bot will not receive updates.")
+async def setup_webhook():
+    """Set up webhook for the Telegram bot."""
+    try:
+        domain = get_deployment_domain()
+        if not domain:
+            logger.error("No deployment domain available. Cannot set webhook.")
+            return False
+        
+        webhook_url = f"{domain}{WEBHOOK_PATH}"
+        app_state['webhook_url'] = webhook_url
+        
+        bot = app_state['bot_app'].bot
+        
+        # Delete existing webhook first
+        await bot.delete_webhook()
+        await asyncio.sleep(1)
+        
+        # Set new webhook
+        await bot.set_webhook(
+            url=webhook_url,
+            allowed_updates=["message", "callback_query"]
+        )
+        
+        # Verify webhook was set
+        webhook_info = await bot.get_webhook_info()
+        if webhook_info.url == webhook_url:
+            app_state['webhook_set'] = True
+            logger.info(f"✅ Webhook set successfully: {webhook_url}")
+            return True
+        else:
+            logger.error(f"❌ Webhook verification failed. Expected: {webhook_url}, Got: {webhook_info.url}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to set webhook: {e}")
+        return False
 
 async def main():
-    """Main asynchronous function to initialize and run the application."""
+    """Main application entry point."""
+    logger.info("🚀 Starting StreamPlayer Bot...")
+    
+    # Initialize MongoDB
     if not initialize_mongodb():
-        logger.error("Failed to connect to MongoDB, exiting.")
-        sys.exit(1)
-
-    app_state['bot_app'] = initialize_telegram_bot_app()
-    if not app_state['bot_app']:
-        logger.error("Failed to initialize Telegram bot, exiting.")
+        logger.error("❌ Failed to initialize MongoDB. Exiting.")
         sys.exit(1)
     
-    await app_state['bot_app'].initialize()
-    set_webhook_sync()
-
+    # Setup Telegram bot
+    bot_app = await setup_telegram_bot()
+    if not bot_app:
+        logger.error("❌ Failed to setup Telegram bot. Exiting.")
+        sys.exit(1)
+    
+    # Initialize bot application
+    await bot_app.initialize()
+    
+    # Setup webhook
+    await setup_webhook()
+    
+    # Configure Hypercorn
     config = HypercornConfig()
     config.bind = [f"0.0.0.0:{PORT}"]
-
-    logger.info("Starting Quart application with Hypercorn...")
+    config.access_log_format = "%(h)s %(r)s %(s)s %(b)s %(D)s"
+    config.access_logger = logging.getLogger("hypercorn.access")
+    config.error_logger = logging.getLogger("hypercorn.error")
+    
+    logger.info(f"🌐 Starting web server on port {PORT}")
+    logger.info(f"🔗 Webhook path: {WEBHOOK_PATH}")
+    logger.info("✅ StreamPlayer Bot is ready!")
+    
+    # Start the server
     await serve(app, config)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
