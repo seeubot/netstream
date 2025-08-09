@@ -1087,7 +1087,8 @@ async def store_file_only(query, file_id):
 📂 **File Stored Successfully!**
 
 **File:** {filename}
-**Stream URL:** `{stream_url}`
+**Stream URL:** 
+`{stream_url}`
 
 Your file is stored and accessible via the stream URL. You can categorize it later using the web interface.
 """
